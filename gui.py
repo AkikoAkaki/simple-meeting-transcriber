@@ -126,7 +126,7 @@ FONT      = ("Segoe UI", 10)
 FONT_BOLD = ("Segoe UI", 11, "bold")
 FONT_HEAD = ("Segoe UI", 17, "bold")
 FONT_TINY = ("Segoe UI", 9)
-MONO      = ("Consolas", 9)
+MONO      = ("Segoe UI", 9)
 
 STEP_LABELS = {
     "[1/4]": "Converting audio…",
@@ -147,7 +147,7 @@ class App(TkinterDnD.Tk if _DND else tk.Tk):
         self._output_path: Path | None = None
         self._running         = False
         self._settings_open   = False
-        self._log_open        = False
+        self._log_open        = True
         self._divs: list[tk.Frame] = []
 
         self.title("meeting-transcriber")
@@ -273,17 +273,18 @@ class App(TkinterDnD.Tk if _DND else tk.Tk):
                                    bd=0, anchor="w", padx=24, pady=6)
         self._btn_log.pack(fill="x")
 
-        # Log panel (hidden by default)
+        # Log panel
         self._panel_log = tk.Frame(self, bg=c["bg"])
         self._f_log_inner = tk.Frame(self._panel_log, bg=c["bg2"])
         self._f_log_inner.pack(fill="x", padx=24, pady=(0, 8))
-        self._log_text = tk.Text(self._f_log_inner, width=62, height=10,
+        self._log_text = tk.Text(self._f_log_inner, width=62, height=16,
                                   font=MONO, relief="flat", bd=0,
                                   state="disabled", wrap="word")
         sb = tk.Scrollbar(self._f_log_inner, command=self._log_text.yview, relief="flat")
         self._log_text.configure(yscrollcommand=sb.set)
         self._log_text.pack(side="left", fill="both", expand=True, padx=6, pady=6)
         sb.pack(side="right", fill="y")
+        self._panel_log.pack(fill="x")
 
         # Open button (shown after done)
         self._btn_open = tk.Button(self, command=self._open_output,
