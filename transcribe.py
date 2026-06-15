@@ -68,7 +68,6 @@ def format_time(seconds: float) -> str:
 
 
 def get_hf_token() -> str:
-    # Priority: config → env var → hf_token.txt → interactive prompt
     if config.HF_TOKEN:
         return config.HF_TOKEN
     token = os.environ.get("HF_TOKEN", "").strip()
@@ -78,33 +77,36 @@ def get_hf_token() -> str:
     if token_file.exists():
         token = token_file.read_text().strip()
         if token:
+            print(f"[INFO] Using HF token from hf_token.txt", flush=True)
             return token
-    print("\n[INFO] HuggingFace token needed for speaker diarization.")
-    print("  1. Get a free token at: https://hf.co/settings/tokens")
-    print("  2. Accept terms at: https://hf.co/pyannote/speaker-diarization-3.1")
-    print("  3. Accept terms at: https://hf.co/pyannote/segmentation-3.0")
-    print("  Or set HF_TOKEN= in config.py to skip this prompt.\n")
-    token = input("  Enter token (or press Enter to skip diarization): ").strip()
-    if token:
-        token_file.write_text(token)
-        os.environ["HF_TOKEN"] = token
-    return token
+    print("[INFO] No HuggingFace token found — skipping speaker diarization.", flush=True)
+    print("       To enable: set HF_TOKEN in config.py, or create hf_token.txt", flush=True)
+    print("       Accept model terms at: https://hf.co/pyannote/speaker-diarization-3.1", flush=True)
+    return ""
 
 
 # ── Step 1: Audio conversion ──────────────────────────────────────────────────
 
 def convert_to_wav(input_path: Path, output_path: Path):
     if output_path.exists():
-        print(f"[1/4] WAV cache found: {output_path.name}")
+        print(f"[1/4] WAV cache found: {output_path.name}", flush=True)
         return
-    print(f"[1/4] Converting audio → 16kHz mono WAV...")
-    subprocess.run([
-        "ffmpeg", "-y", "-i", str(input_path),
-        "-ac", "1", "-ar", "16000",
-        "-progress", "pipe:1", "-nostats",
-        str(output_path),
-    ], check=True, capture_output=True)
-    print(f"      Done ({output_path.stat().st_size / 1024 / 1024:.0f} MB)")
+    print(f"[1/4] Converting audio → 16kHz mono WAV...", flush=True)
+    try:
+        result = subprocess.run(
+            ["ffmpeg", "-y", "-i", str(input_path), "-ac", "1", "-ar", "16000", str(output_path)],
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
+        )
+    except FileNotFoundError:
+        print("ERROR: ffmpeg not found in PATH.", flush=True)
+        print("       Install ffmpeg: https://ffmpeg.org/download.html", flush=True)
+        sys.exit(1)
+    if result.returncode != 0:
+        print(f"ERROR: ffmpeg failed (exit {result.returncode}):", flush=True)
+        for line in result.stderr.splitlines()[-20:]:
+            print(f"       {line}", flush=True)
+        sys.exit(1)
+    print(f"[1/4] Done — {output_path.stat().st_size / 1024 / 1024:.1f} MB", flush=True)
 
 
 # ── Step 2: Whisper transcription ─────────────────────────────────────────────
@@ -113,18 +115,28 @@ def run_whisper(wav_path: Path, whisper_json: Path, language: str | None) -> lis
     from faster_whisper import WhisperModel
 
     if whisper_json.exists():
-        print("[2/4] Loading cached Whisper result...")
-        return json.loads(whisper_json.read_text(encoding="utf-8"))
+        print("[2/4] Loading cached Whisper result...", flush=True)
+        segs = json.loads(whisper_json.read_text(encoding="utf-8"))
+        print(f"      {len(segs)} segments from cache", flush=True)
+        return segs
 
     device = _resolve_device()
     compute_type = "float16" if device == "cuda" else "int8"
     lang_display = language or "auto-detect"
-    print(f"[2/4] Loading Whisper {config.WHISPER_MODEL} on {device}...")
-    print("      (First run downloads ~3 GB model weights)")
+    print(f"[2/4] Loading Whisper {config.WHISPER_MODEL} on {device} ({compute_type})...", flush=True)
+    print(f"      (First run: model weights will be downloaded to HuggingFace cache)", flush=True)
 
-    model = WhisperModel(config.WHISPER_MODEL, device=device, compute_type=compute_type)
+    try:
+        model = WhisperModel(config.WHISPER_MODEL, device=device, compute_type=compute_type)
+    except RuntimeError as e:
+        if "out of memory" in str(e).lower():
+            print("ERROR: GPU out of memory loading Whisper model.", flush=True)
+            print(f"       Try --model medium or --device cpu", flush=True)
+        else:
+            print(f"ERROR: Failed to load Whisper model: {e}", flush=True)
+        sys.exit(1)
 
-    print(f"      Transcribing [{lang_display}] — this may take 10–25 min...")
+    print(f"      Model loaded. Transcribing [{lang_display}]...", flush=True)
     seg_iter, info = model.transcribe(
         str(wav_path),
         language=language,
@@ -134,12 +146,16 @@ def run_whisper(wav_path: Path, whisper_json: Path, language: str | None) -> lis
         vad_parameters=dict(min_silence_duration_ms=2000),
     )
 
-    segments = [
-        {"start": round(s.start, 2), "end": round(s.end, 2), "text": s.text.strip()}
-        for s in seg_iter if s.text.strip()
-    ]
+    segments = []
+    for s in seg_iter:
+        if not s.text.strip():
+            continue
+        segments.append({"start": round(s.start, 2), "end": round(s.end, 2), "text": s.text.strip()})
+        if len(segments) % 20 == 0:
+            print(f"      ... {len(segments)} segments, up to {format_time(s.end)}", flush=True)
+
     whisper_json.write_text(json.dumps(segments, ensure_ascii=False, indent=2), encoding="utf-8")
-    print(f"      {len(segments)} segments (detected: {info.language}, p={info.language_probability:.0%})")
+    print(f"      Done — {len(segments)} segments | detected: {info.language} ({info.language_probability:.0%})", flush=True)
     return segments
 
 
@@ -150,40 +166,63 @@ def run_diarization(wav_path: Path, diarize_json: Path) -> list[dict]:
     from pyannote.audio import Pipeline
 
     if diarize_json.exists():
-        print("[3/4] Loading cached diarization result...")
-        return json.loads(diarize_json.read_text(encoding="utf-8"))
+        print("[3/4] Loading cached diarization result...", flush=True)
+        turns = json.loads(diarize_json.read_text(encoding="utf-8"))
+        print(f"      {len(turns)} turns from cache", flush=True)
+        return turns
 
     token = get_hf_token()
     if not token:
-        print("[3/4] Skipping diarization (no token)")
+        print("[3/4] Skipping diarization (no HF token)", flush=True)
         return []
 
     os.environ["HF_TOKEN"] = token
-    print("[3/4] Loading pyannote diarization model...")
+    print("[3/4] Loading pyannote/speaker-diarization-3.1...", flush=True)
+    print("      (First run: model weights will be downloaded)", flush=True)
     try:
-        pipeline = Pipeline.from_pretrained("pyannote/speaker-diarization-3.1")
+        pipeline = Pipeline.from_pretrained("pyannote/speaker-diarization-3.1", use_auth_token=token)
     except Exception as e:
-        print(f"      Failed to load model: {e}")
-        print("      Check token validity and that you accepted model terms.")
+        err = str(e)
+        if any(k in err for k in ("401", "403", "gated", "unauthorized", "PermissionError")):
+            print("ERROR: HuggingFace access denied. Check that:", flush=True)
+            print("  1. HF_TOKEN is valid — https://hf.co/settings/tokens", flush=True)
+            print("  2. Model terms accepted — https://hf.co/pyannote/speaker-diarization-3.1", flush=True)
+            print("  3. Model terms accepted — https://hf.co/pyannote/segmentation-3.0", flush=True)
+        else:
+            print(f"ERROR: Failed to load diarization model: {e}", flush=True)
         return []
 
     device = _resolve_device()
     if device == "cuda":
-        pipeline.to(torch.device("cuda"))
+        try:
+            pipeline.to(torch.device("cuda"))
+            print("      Diarization pipeline moved to GPU", flush=True)
+        except RuntimeError as e:
+            print(f"      GPU move failed ({e}), falling back to CPU", flush=True)
+            device = "cpu"
 
     kwargs = {}
     if config.MAX_SPEAKERS:
         kwargs["max_speakers"] = config.MAX_SPEAKERS
+        print(f"      max_speakers={config.MAX_SPEAKERS}", flush=True)
 
-    print(f"      Diarizing on {device} — this may take 15–30 min...")
-    diarization = pipeline(str(wav_path), **kwargs)
+    print(f"      Running diarization on {device} — may take 10–25 min...", flush=True)
+    try:
+        diarization = pipeline(str(wav_path), **kwargs)
+    except RuntimeError as e:
+        if "out of memory" in str(e).lower():
+            print("ERROR: GPU out of memory during diarization.", flush=True)
+            print("       Retry with --device cpu", flush=True)
+        else:
+            print(f"ERROR: Diarization failed: {e}", flush=True)
+        return []
 
     turns = [
         {"start": round(t.start, 2), "end": round(t.end, 2), "speaker": f"SPEAKER_{spk}"}
         for t, _, spk in diarization.itertracks(yield_label=True)
     ]
     diarize_json.write_text(json.dumps(turns, ensure_ascii=False, indent=2), encoding="utf-8")
-    print(f"      {len(turns)} speaker turns identified")
+    print(f"      Done — {len(turns)} speaker turns identified", flush=True)
     return turns
 
 
@@ -196,7 +235,7 @@ def _overlap_ratio(a_start, a_end, b_start, b_end) -> float:
 
 
 def merge_results(whisper_segments: list[dict], speaker_turns: list[dict]) -> list[dict]:
-    print("[4/4] Merging transcript and speaker labels...")
+    print("[4/4] Merging transcript and speaker labels...", flush=True)
 
     labeled = []
     for seg in whisper_segments:
@@ -217,7 +256,7 @@ def merge_results(whisper_segments: list[dict], speaker_turns: list[dict]) -> li
         else:
             merged.append(dict(seg))
 
-    print(f"      {len(merged)} segments after merge")
+    print(f"      {len(merged)} segments after merge", flush=True)
     return merged
 
 
@@ -257,6 +296,19 @@ def generate_markdown(segments: list[dict], source_file: str, total_sec: float,
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 def main():
+    try:
+        _main()
+    except KeyboardInterrupt:
+        print("\nInterrupted.", flush=True)
+        sys.exit(1)
+    except Exception as e:
+        import traceback
+        print(f"\nFATAL: {e}", flush=True)
+        traceback.print_exc(file=sys.stdout)
+        sys.exit(1)
+
+
+def _main():
     parser = argparse.ArgumentParser(description="Transcribe a meeting recording with speaker labels")
     parser.add_argument("input", help="Path to video/audio file")
     parser.add_argument("--language", default=None,
@@ -284,7 +336,7 @@ def main():
     input_path = Path(args.input).resolve()
 
     if not input_path.exists():
-        print(f"Error: file not found: {input_path}")
+        print(f"ERROR: file not found: {input_path}", flush=True)
         sys.exit(1)
 
     paths = derive_paths(input_path)
@@ -293,8 +345,8 @@ def main():
 
     if args.diarize_only:
         if not paths["whisper_json"].exists():
-            print(f"Error: no cached Whisper result for {input_path.name}")
-            print("Run without --diarize-only first.")
+            print(f"ERROR: no cached Whisper result for {input_path.name}", flush=True)
+            print("       Run without --diarize-only first.", flush=True)
             sys.exit(1)
         whisper_segments = json.loads(paths["whisper_json"].read_text(encoding="utf-8"))
     else:
@@ -314,8 +366,8 @@ def main():
     md = generate_markdown(segments, input_path.name, total_sec, bool(speaker_turns), language)
     paths["output_md"].write_text(md, encoding="utf-8")
 
-    print(f"\n✓ Done → {paths['output_md']}")
-    print(f"  Cache files in {config.CACHE_DIR} can be deleted to free disk space.")
+    print(f"\n✓ Done → {paths['output_md']}", flush=True)
+    print(f"  Cache files in {config.CACHE_DIR} can be deleted to free disk space.", flush=True)
 
 
 if __name__ == "__main__":

@@ -124,15 +124,20 @@ SPEAKERS = ["auto", "2", "3", "4", "5"]
 
 FONT      = ("Segoe UI", 10)
 FONT_BOLD = ("Segoe UI", 11, "bold")
-FONT_HEAD = ("Segoe UI", 17, "bold")
+FONT_HEAD = ("Segoe UI", 13, "bold")
 FONT_TINY = ("Segoe UI", 9)
-MONO      = ("Segoe UI", 9)
 
 STEP_LABELS = {
-    "[1/4]": "Converting audio…",
-    "[2/4]": "Running Whisper…",
-    "[3/4]": "Diarizing speakers…",
-    "[4/4]": "Merging results…",
+    "[1/4]":              "Step 1/4 — Converting audio…",
+    "[2/4]":              "Step 2/4 — Loading Whisper model…",
+    "Transcribing [":     "Step 2/4 — Transcribing…",
+    "segments, up to":    "Step 2/4 — Transcribing…",
+    "[3/4]":              "Step 3/4 — Loading diarization model…",
+    "Running diarization":"Step 3/4 — Diarizing (may take 10–20 min)…",
+    "[4/4]":              "Step 4/4 — Merging results…",
+    "✓ Done":             "Done!",
+    "ERROR:":             "Error — see log below",
+    "FATAL:":             "Fatal error — see log below",
 }
 
 
@@ -153,10 +158,11 @@ class App(TkinterDnD.Tk if _DND else tk.Tk):
         self.title("meeting-transcriber")
         self.resizable(False, False)
         self.configure(bg=self._c["bg"])
+        self.option_add("*Font", FONT)
         self._build()
         self._retranslate()
         self._retheme()
-        self._autosize()
+        self._center()
 
     # ── Build ─────────────────────────────────────────────────────────────────
 
@@ -556,6 +562,15 @@ class App(TkinterDnD.Tk if _DND else tk.Tk):
     def _autosize(self):
         self.update_idletasks()
         self.geometry(f"{W}x{self.winfo_reqheight()}")
+
+    def _center(self):
+        self.update_idletasks()
+        h  = self.winfo_reqheight()
+        sw = self.winfo_screenwidth()
+        sh = self.winfo_screenheight()
+        x  = (sw - W) // 2
+        y  = (sh - h) // 2
+        self.geometry(f"{W}x{h}+{x}+{y}")
 
 
 if __name__ == "__main__":
