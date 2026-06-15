@@ -9,6 +9,7 @@ Usage:    python gui.py
 
 import json
 import os
+import re
 import subprocess
 import sys
 import threading
@@ -126,6 +127,7 @@ I18N = {
         "token_show":    "👁",
         "transcribe":    "Transcribe",
         "running":       "Running…",
+        "cancel":        "Cancel",
         "log_show":      "▸  Log",
         "log_hide":      "▾  Log",
         "open_btn":      "Open transcript →",
@@ -155,6 +157,7 @@ I18N = {
         "token_show":    "👁",
         "transcribe":    "开始转录",
         "running":       "转录中…",
+        "cancel":        "取消",
         "log_show":      "▸  日志",
         "log_hide":      "▾  日志",
         "open_btn":      "打开转录文件 →",
@@ -216,6 +219,7 @@ class App(TkinterDnD.Tk if _DND else tk.Tk):
         self._video_path:  Path | None = None
         self._output_path: Path | None = None
         self._running       = False
+        self._proc: subprocess.Popen | None = None
         self._settings_open = False
         self._log_open      = True
         self._token_visible = False
@@ -813,13 +817,20 @@ class App(TkinterDnD.Tk if _DND else tk.Tk):
         self._running = True
         self._outdir_snapshot = Path(self._var_outdir.get())
         self._btn_open.pack_forget()
-        self._btn_start.configure(state="disabled", bg=self._c["bg3"])
+        self._btn_start.configure(
+            text=self._t("cancel"), command=self._cancel,
+            bg=self._c["danger"], state="normal")
         self._set_status(self._t("running"))
         self._clear_log()
         self._progress.pack(fill="x", padx=24, pady=(0, 4))
         self._progress.start(12)
         self._autosize()
         threading.Thread(target=self._run, daemon=True).start()
+
+    def _cancel(self):
+        if self._proc and self._proc.poll() is None:
+            self._proc.terminate()
+        # _run thread will see proc exit with non-zero and call _on_error
 
     def _run(self):
         cmd = [sys.executable, str(TRANSCRIBE_SCRIPT), str(self._video_path)]
@@ -858,6 +869,11 @@ class App(TkinterDnD.Tk if _DND else tk.Tk):
             self.after(0, self._append_log, line)
             if done_marker in line:
                 emitted_path = Path(line.split(done_marker, 1)[1].strip())
+            m = re.search(r'(\d+) segments, up to (\S+)', line)
+            if m:
+                n, ts = m.group(1), m.group(2)
+                self.after(0, self._set_status, f"Transcribing — {n} segs · {ts}")
+                continue
             for marker, label in STEP_LABELS.items():
                 if marker in line:
                     self.after(0, self._set_status, label)
