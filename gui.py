@@ -464,7 +464,7 @@ class App(TkinterDnD.Tk if _DND else tk.Tk):
         self._onb_link_hf.pack(side="left")
         self._onb_hint1 = tk.Label(self._onb_steps, font=FONT_TINY, fg=c["fg_dim"],
                                     bg=c["bg2"], anchor="w", justify="left",
-                                    wraplength=520)
+                                    wraplength=460)
         self._onb_hint1.pack(fill="x", padx=20, pady=(0, 6))
         r1b = tk.Frame(self._onb_steps, bg=c["bg2"])
         r1b.pack(fill="x", padx=20, pady=(2, 4))
@@ -489,7 +489,7 @@ class App(TkinterDnD.Tk if _DND else tk.Tk):
         self._onb_link_seg.pack(side="left", padx=(8, 0))
         self._onb_hint2 = tk.Label(self._onb_steps, font=FONT_TINY, fg=c["fg_dim"],
                                     bg=c["bg2"], anchor="w", justify="left",
-                                    wraplength=520)
+                                    wraplength=460)
         self._onb_hint2.pack(fill="x", padx=20, pady=(0, 6))
 
         # -- Step 3: output dir --
