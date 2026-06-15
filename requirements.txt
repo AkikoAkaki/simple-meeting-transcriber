@@ -1,0 +1,4 @@
+faster-whisper
+pyannote.audio
+torchaudio
+watchdog

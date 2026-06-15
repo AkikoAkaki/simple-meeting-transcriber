@@ -1,0 +1,28 @@
+# Videos and audio (large binaries — don't commit)
+inbox/**
+!inbox/.gitkeep
+
+# Generated output
+transcripts/**
+!transcripts/.gitkeep
+
+# Intermediate files
+cache/**
+!cache/.gitkeep
+
+# Secrets
+hf_token.txt
+.env
+
+# Logs
+watch.log
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
