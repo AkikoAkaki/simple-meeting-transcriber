@@ -115,8 +115,11 @@ def get_hf_token() -> str:
 
 def convert_to_wav(input_path: Path, output_path: Path):
     if output_path.exists():
-        print(f"[1/4] WAV cache found: {output_path.name}", flush=True)
-        return
+        if output_path.stat().st_size < 1024:
+            output_path.unlink()
+        else:
+            print(f"[1/4] WAV cache found: {output_path.name}", flush=True)
+            return
     print(f"[1/4] Converting audio → 16kHz mono WAV...", flush=True)
     try:
         result = subprocess.run(

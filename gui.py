@@ -73,6 +73,14 @@ def _system_is_dark() -> bool:
     else:  # Linux / other
         try:
             r = subprocess.run(
+                ["kreadconfig5", "--group", "General", "--key", "ColorScheme"],
+                capture_output=True, text=True, timeout=2)
+            if "dark" in r.stdout.lower():
+                return True
+        except Exception:
+            pass
+        try:
+            r = subprocess.run(
                 ["gsettings", "get", "org.gnome.desktop.interface", "color-scheme"],
                 capture_output=True, text=True, timeout=2)
             return "dark" in r.stdout.lower()
@@ -800,7 +808,7 @@ class App(TkinterDnD.Tk if _DND else tk.Tk):
         self._video_path = path
         name = path.name
         self._lbl_file.configure(
-            text=name if len(name) <= 46 else f"…{name[-44:]}",
+            text=name if len(name) <= 46 else f"{name[:20]}…{name[-24:]}",
             fg=self._c["fg"],
         )
         self._btn_open.pack_forget()
