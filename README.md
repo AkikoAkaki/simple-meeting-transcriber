@@ -104,6 +104,9 @@ python transcribe.py meeting.mp4 --transcribe-only
 
 # Re-run diarization on an already-transcribed file
 python transcribe.py meeting.mp4 --diarize-only
+
+# Override model, device, or speaker count (one-off, without editing config.py)
+python transcribe.py meeting.mp4 --model medium --device cpu --max-speakers 3
 ```
 
 ---

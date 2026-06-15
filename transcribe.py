@@ -265,7 +265,20 @@ def main():
                         help="Run Whisper only, skip diarization (no HF token needed)")
     parser.add_argument("--diarize-only", action="store_true",
                         help="Re-run diarization using cached Whisper result")
+    parser.add_argument("--model", default=None,
+                        help="Whisper model size (tiny/base/small/medium/large-v3). Overrides config.py")
+    parser.add_argument("--device", default=None,
+                        help="Compute device (auto/cuda/cpu). Overrides config.py")
+    parser.add_argument("--max-speakers", default=None, type=int,
+                        help="Maximum number of speakers. Overrides config.py")
     args = parser.parse_args()
+
+    if args.model:
+        config.WHISPER_MODEL = args.model
+    if args.device:
+        config.DEVICE = args.device
+    if args.max_speakers is not None:
+        config.MAX_SPEAKERS = args.max_speakers
 
     language = args.language or config.LANGUAGE
     input_path = Path(args.input).resolve()

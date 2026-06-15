@@ -2,3 +2,4 @@ faster-whisper
 pyannote.audio
 torchaudio
 watchdog
+tkinterdnd2  # optional, enables drag-and-drop in gui.py
