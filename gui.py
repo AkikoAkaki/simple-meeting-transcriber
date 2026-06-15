@@ -14,6 +14,7 @@ import subprocess
 import sys
 import threading
 import tkinter as tk
+import webbrowser
 from pathlib import Path
 from tkinter import filedialog, ttk
 
@@ -148,6 +149,16 @@ I18N = {
         "browse_btn":    "Browse",
         "details_btn":   "Details ↓",
         "set_token_btn": "Set token ▸",
+        "onb_welcome":   "👋 Welcome to Simple Video Transcriber",
+        "onb_subtitle":   "Fully local meeting transcription — nothing leaves your computer.",
+        "onb_step1":     "Step 1 — Get a free HuggingFace token",
+        "onb_link_hf":   "Open hf.co/settings/tokens →",
+        "onb_step2":     "Step 2 — Accept model licenses (one-time, requires login)",
+        "onb_link_diar": "License: diarization →",
+        "onb_link_seg":  "License: segmentation →",
+        "onb_step3":     "Step 3 — Output folder",
+        "onb_save":      "Save",
+        "onb_ready":     "✓ Ready — drop a video file above to transcribe.",
     },
     "zh": {
         "title":         "会议转录",
@@ -181,6 +192,16 @@ I18N = {
         "browse_btn":    "浏览",
         "details_btn":   "查看详情 ↓",
         "set_token_btn": "设置 Token ▸",
+        "onb_welcome":   "👋 欢迎使用 Simple Video Transcriber",
+        "onb_subtitle":   "全自动会议转录 — 完全本地运行，无需上传。",
+        "onb_step1":     "第一步 — 获取免费的 HuggingFace Token",
+        "onb_link_hf":   "打开 hf.co/settings/tokens →",
+        "onb_step2":     "第二步 — 接受模型使用协议（登录后操作，仅需一次）",
+        "onb_link_diar": "协议: 说话人分离 →",
+        "onb_link_seg":  "协议: 语音分割 →",
+        "onb_step3":     "第三步 — 输出目录",
+        "onb_save":      "保存",
+        "onb_ready":     "✓ 已就绪 — 将视频拖入上方区域即可开始转录。",
     },
 }
 
@@ -412,13 +433,82 @@ class App(TkinterDnD.Tk if _DND else tk.Tk):
 
         self._divs.append(self._mk_div())
 
+        # ── Onboarding panel (shown when no token; hidden once set) ──
+        self._onboarding = tk.Frame(self, bg=c["bg2"])
+        self._onb_steps = tk.Frame(self._onboarding, bg=c["bg2"])
+        self._onb_done  = tk.Frame(self._onboarding, bg=c["bg2"])
+
+        # -- Welcome --
+        self._onb_welcome = tk.Label(self._onb_steps, font=FONT_HEAD,
+                                      bg=c["bg2"], fg=c["fg"])
+        self._onb_welcome.pack(anchor="w", padx=20, pady=(16, 0))
+        self._onb_subtitle = tk.Label(self._onb_steps, font=FONT_TINY,
+                                       bg=c["bg2"], fg=c["fg_dim"])
+        self._onb_subtitle.pack(anchor="w", padx=20, pady=(2, 12))
+
+        # -- Divider --
+        tk.Frame(self._onb_steps, height=1, bg=c["bg3"]).pack(fill="x", padx=20)
+
+        # -- Step 1: token --
+        self._onb_step1 = tk.Label(self._onb_steps, font=FONT_BOLD,
+                                    bg=c["bg2"], fg=c["fg"])
+        self._onb_step1.pack(anchor="w", padx=20, pady=(10, 2))
+        r1 = tk.Frame(self._onb_steps, bg=c["bg2"])
+        r1.pack(fill="x", padx=20, pady=(2, 2))
+        self._onb_link_hf = tk.Button(r1, font=FONT_TINY, cursor="hand2", bd=0,
+            command=lambda: webbrowser.open("https://hf.co/settings/tokens"))
+        self._onb_link_hf.pack(side="left")
+        r1b = tk.Frame(self._onb_steps, bg=c["bg2"])
+        r1b.pack(fill="x", padx=20, pady=(2, 4))
+        self._onb_entry_token = tk.Entry(r1b, show="•", font=FONT, width=28,
+                                          relief="flat", bd=1)
+        self._onb_entry_token.pack(side="left")
+        self._onb_btn_save = tk.Button(r1b, font=FONT_TINY, cursor="hand2", bd=0,
+                                        padx=12, pady=3, command=self._onb_save)
+        self._onb_btn_save.pack(side="left", padx=(6, 0))
+
+        # -- Step 2: licenses --
+        self._onb_step2 = tk.Label(self._onb_steps, font=FONT_BOLD,
+                                    bg=c["bg2"], fg=c["fg"])
+        self._onb_step2.pack(anchor="w", padx=20, pady=(10, 2))
+        r2 = tk.Frame(self._onb_steps, bg=c["bg2"])
+        r2.pack(fill="x", padx=20, pady=(2, 4))
+        self._onb_link_diar = tk.Button(r2, font=FONT_TINY, cursor="hand2", bd=0,
+            command=lambda: webbrowser.open("https://hf.co/pyannote/speaker-diarization-3.1"))
+        self._onb_link_diar.pack(side="left")
+        self._onb_link_seg = tk.Button(r2, font=FONT_TINY, cursor="hand2", bd=0,
+            command=lambda: webbrowser.open("https://hf.co/pyannote/segmentation-3.0"))
+        self._onb_link_seg.pack(side="left", padx=(8, 0))
+
+        # -- Step 3: output dir --
+        self._onb_step3 = tk.Label(self._onb_steps, font=FONT_BOLD,
+                                    bg=c["bg2"], fg=c["fg"])
+        self._onb_step3.pack(anchor="w", padx=20, pady=(10, 2))
+        r3 = tk.Frame(self._onb_steps, bg=c["bg2"])
+        r3.pack(fill="x", padx=20, pady=(2, 14))
+        self._onb_entry_outdir = tk.Entry(r3, textvariable=self._var_outdir,
+            state="readonly", font=FONT_TINY, width=42, relief="flat", bd=1)
+        self._onb_entry_outdir.pack(side="left")
+        self._onb_btn_browse = tk.Button(r3, font=FONT_TINY, cursor="hand2", bd=0,
+            padx=12, pady=3, command=self._browse_outdir)
+        self._onb_btn_browse.pack(side="left", padx=(6, 0))
+
+        # -- Done (collapsed state) --
+        self._onb_done_lbl = tk.Label(self._onb_done, font=FONT,
+                                       bg=c["bg2"], fg=c["fg"])
+        self._onb_done_lbl.pack(side="left", padx=20, pady=(12, 12))
+        self._onb_done_btn = tk.Button(self._onb_done, font=FONT_TINY,
+            cursor="hand2", bd=0, padx=10, pady=4,
+            command=self._onb_reopen)
+        self._onb_done_btn.pack(side="right", padx=20, pady=(12, 12))
+
         # ── Action row ──
         self._f_action = tk.Frame(self, bg=c["bg"])
         self._f_action.pack(fill="x", padx=24, pady=12)
         self._btn_start = tk.Button(self._f_action, command=self._start,
                                      font=FONT_BOLD, relief="flat",
                                      padx=20, pady=8, cursor="hand2", bd=0)
-        self._btn_start.pack(side="left")
+        # Hidden until token is set (shown by _update_onboarding)
         self._lbl_status = tk.Label(self._f_action, bg=c["bg"], font=FONT)
         self._lbl_status.pack(side="left", padx=14)
 
@@ -540,6 +630,29 @@ class App(TkinterDnD.Tk if _DND else tk.Tk):
         # Re-apply banner colors with new theme
         self._update_banner()
 
+        # ── Onboarding ──
+        self._onboarding.configure(bg=c["bg2"])
+        self._onb_steps.configure(bg=c["bg2"])
+        self._onb_done.configure(bg=c["bg2"])
+        self._onb_welcome.configure(bg=c["bg2"], fg=c["fg"])
+        self._onb_subtitle.configure(bg=c["bg2"], fg=c["fg_dim"])
+        self._onb_step1.configure(bg=c["bg2"], fg=c["fg"])
+        self._onb_step2.configure(bg=c["bg2"], fg=c["fg"])
+        self._onb_step3.configure(bg=c["bg2"], fg=c["fg"])
+        self._onb_entry_token.configure(bg=c["bg2"], fg=c["fg"],
+            insertbackground=c["fg"], highlightbackground=c["bg3"], highlightthickness=1)
+        self._onb_entry_outdir.configure(bg=c["bg2"], fg=c["fg"],
+            readonlybackground=c["bg2"], highlightbackground=c["bg3"], highlightthickness=1)
+        for btn in (self._onb_link_hf, self._onb_link_diar, self._onb_link_seg):
+            btn.configure(bg=c["bg2"], fg=c["accent"],
+                          activebackground=c["bg3"], activeforeground=c["accent"])
+        for btn in (self._onb_btn_save, self._onb_btn_browse):
+            btn.configure(bg=c["bg2"], fg=c["accent"],
+                          activebackground=c["bg3"], activeforeground=c["accent"])
+        self._onb_done_lbl.configure(bg=c["bg2"], fg=c["fg"])
+        self._onb_done_btn.configure(bg=c["bg2"], fg=c["accent"],
+            activebackground=c["bg3"], activeforeground=c["accent"])
+
     def _toggle_theme(self):
         self._theme_key = "light" if self._theme_key == "dark" else "dark"
         self._c = THEMES[self._theme_key]
@@ -573,6 +686,19 @@ class App(TkinterDnD.Tk if _DND else tk.Tk):
         self._btn_start.configure(text=t("transcribe"))
         self._btn_log.configure(text=t("log_hide") if self._log_open else t("log_show"))
         self._btn_open.configure(text=t("open_btn"))
+        # Onboarding
+        self._onb_welcome.configure(text=t("onb_welcome"))
+        self._onb_subtitle.configure(text=t("onb_subtitle"))
+        self._onb_step1.configure(text=t("onb_step1"))
+        self._onb_link_hf.configure(text=t("onb_link_hf"))
+        self._onb_step2.configure(text=t("onb_step2"))
+        self._onb_link_diar.configure(text=t("onb_link_diar"))
+        self._onb_link_seg.configure(text=t("onb_link_seg"))
+        self._onb_step3.configure(text=t("onb_step3"))
+        self._onb_btn_save.configure(text=t("onb_save"))
+        self._onb_btn_browse.configure(text=t("browse_btn"))
+        self._onb_done_lbl.configure(text=t("onb_ready"))
+        self._onb_done_btn.configure(text=t("token_show"))
 
     def _toggle_ui_lang(self):
         self._ui_lang = "zh" if self._ui_lang == "en" else "en"
@@ -690,7 +816,8 @@ class App(TkinterDnD.Tk if _DND else tk.Tk):
             if not self._running:
                 for line in captured_lines:
                     self._append_log(line)
-            self._update_banner()
+            self._banner.pack_forget()
+            self._update_onboarding()
         self.after(0, _flush)
 
     def _update_banner(self):
@@ -732,7 +859,53 @@ class App(TkinterDnD.Tk if _DND else tk.Tk):
         self._banner_lbl.configure(text=msg, bg=bg, fg=fg)
         self._banner_btn.configure(text=btxt, command=bcmd, bg=bg, fg=fg,
                                     activebackground=bg, activeforeground=fg)
-        self._banner.pack(fill="x", padx=24, pady=(4, 0), after=self._divs[0])
+        after = self._onboarding if self._onboarding.winfo_ismapped() else self._divs[0]
+        self._banner.pack(fill="x", padx=24, pady=(4, 0), after=after)
+        self._autosize()
+
+    def _update_onboarding(self):
+        token_ok = self._checks.get("token", False)
+        if not token_ok:
+            self._banner.pack_forget()
+            self._onb_steps.pack(fill="x")
+            self._onb_done.pack_forget()
+            self._onboarding.pack(fill="x", padx=24, pady=(4, 0), after=self._divs[0])
+            self._btn_start.pack_forget()
+            # Pre-fill token if saved
+            _saved = config.HF_TOKEN or (TOKEN_FILE.read_text().strip() if TOKEN_FILE.exists() else "")
+            if _saved and not self._onb_entry_token.get():
+                self._onb_entry_token.insert(0, _saved)
+        else:
+            self._onb_done_state()
+            self._update_banner()
+        self._autosize()
+
+    def _onb_save(self):
+        token = self._onb_entry_token.get().strip()
+        if token:
+            TOKEN_FILE.write_text(token)
+        elif TOKEN_FILE.exists():
+            TOKEN_FILE.unlink()
+        config.HF_TOKEN = token
+        if self._checks:
+            self._checks["token"] = bool(token)
+        self._entry_token.delete(0, "end")
+        if token:
+            self._entry_token.insert(0, token)
+        self._btn_token_save.configure(text=self._t("token_saved"))
+        self.after(1500, lambda: self._btn_token_save.configure(text=self._t("token_save")))
+        self._update_onboarding()
+
+    def _onb_done_state(self):
+        """Show the collapsed 'ready' bar instead of full steps."""
+        self._onb_steps.pack_forget()
+        self._onb_done.pack(fill="x")
+        self._btn_start.pack(side="left")
+        self._autosize()
+
+    def _onb_reopen(self):
+        self._onb_done.pack_forget()
+        self._onb_steps.pack(fill="x")
         self._autosize()
 
     # ── HF Token ──────────────────────────────────────────────────────────────
