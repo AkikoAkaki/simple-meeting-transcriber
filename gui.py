@@ -153,9 +153,11 @@ I18N = {
         "onb_subtitle":   "Fully local meeting transcription — nothing leaves your computer.",
         "onb_step1":     "Step 1 — Get a free HuggingFace token",
         "onb_link_hf":   "Open hf.co/settings/tokens →",
+        "onb_hint1":     "On the page: New token → name it → type Read → Generate. Paste the key here.",
         "onb_step2":     "Step 2 — Accept model licenses (one-time, requires login)",
         "onb_link_diar": "License: diarization →",
         "onb_link_seg":  "License: segmentation →",
+        "onb_hint2":     "On each page: log in → click \"Agree and access repository\". Fill in any username.",
         "onb_step3":     "Step 3 — Output folder",
         "onb_save":      "Save",
         "onb_ready":     "✓ Ready — drop a video file above to transcribe.",
@@ -196,9 +198,11 @@ I18N = {
         "onb_subtitle":   "全自动会议转录 — 完全本地运行，无需上传。",
         "onb_step1":     "第一步 — 获取免费的 HuggingFace Token",
         "onb_link_hf":   "打开 hf.co/settings/tokens →",
+        "onb_hint1":     "在打开的页面中：新建 Token → 起个名字 → 选 Read → 点 Generate。粘贴生成的 key。",
         "onb_step2":     "第二步 — 接受模型使用协议（登录后操作，仅需一次）",
         "onb_link_diar": "协议: 说话人分离 →",
         "onb_link_seg":  "协议: 语音分割 →",
+        "onb_hint2":     "在每个页面：登录 → 点击 \"Agree and access repository\"。随便填个用户名即可。",
         "onb_step3":     "第三步 — 输出目录",
         "onb_save":      "保存",
         "onb_ready":     "✓ 已就绪 — 将视频拖入上方区域即可开始转录。",
@@ -458,6 +462,9 @@ class App(TkinterDnD.Tk if _DND else tk.Tk):
         self._onb_link_hf = tk.Button(r1, font=FONT_TINY, cursor="hand2", bd=0,
             command=lambda: webbrowser.open("https://hf.co/settings/tokens"))
         self._onb_link_hf.pack(side="left")
+        self._onb_hint1 = tk.Label(self._onb_steps, font=FONT_TINY, fg=c["fg_dim"],
+                                    bg=c["bg2"], anchor="w", justify="left")
+        self._onb_hint1.pack(fill="x", padx=20, pady=(0, 4))
         r1b = tk.Frame(self._onb_steps, bg=c["bg2"])
         r1b.pack(fill="x", padx=20, pady=(2, 4))
         self._onb_entry_token = tk.Entry(r1b, show="•", font=FONT, width=28,
@@ -479,6 +486,9 @@ class App(TkinterDnD.Tk if _DND else tk.Tk):
         self._onb_link_seg = tk.Button(r2, font=FONT_TINY, cursor="hand2", bd=0,
             command=lambda: webbrowser.open("https://hf.co/pyannote/segmentation-3.0"))
         self._onb_link_seg.pack(side="left", padx=(8, 0))
+        self._onb_hint2 = tk.Label(self._onb_steps, font=FONT_TINY, fg=c["fg_dim"],
+                                    bg=c["bg2"], anchor="w", justify="left")
+        self._onb_hint2.pack(fill="x", padx=20, pady=(0, 4))
 
         # -- Step 3: output dir --
         self._onb_step3 = tk.Label(self._onb_steps, font=FONT_BOLD,
@@ -501,6 +511,9 @@ class App(TkinterDnD.Tk if _DND else tk.Tk):
             cursor="hand2", bd=0, padx=10, pady=4,
             command=self._onb_reopen)
         self._onb_done_btn.pack(side="right", padx=20, pady=(12, 12))
+        # Show steps immediately; _update_onboarding toggles when checks complete
+        self._onb_steps.pack(fill="x")
+        self._onboarding.pack(fill="x", padx=24, pady=(4, 0), after=self._divs[1])
 
         # ── Action row ──
         self._f_action = tk.Frame(self, bg=c["bg"])
@@ -640,6 +653,8 @@ class App(TkinterDnD.Tk if _DND else tk.Tk):
         self._onb_step1.configure(bg=c["bg2"], fg=c["fg"])
         self._onb_step2.configure(bg=c["bg2"], fg=c["fg"])
         self._onb_step3.configure(bg=c["bg2"], fg=c["fg"])
+        self._onb_hint1.configure(bg=c["bg2"], fg=c["fg_dim"])
+        self._onb_hint2.configure(bg=c["bg2"], fg=c["fg_dim"])
         self._onb_entry_token.configure(bg=c["bg2"], fg=c["fg"],
             insertbackground=c["fg"], highlightbackground=c["bg3"], highlightthickness=1)
         self._onb_entry_outdir.configure(bg=c["bg2"], fg=c["fg"],
@@ -695,6 +710,8 @@ class App(TkinterDnD.Tk if _DND else tk.Tk):
         self._onb_step2.configure(text=t("onb_step2"))
         self._onb_link_diar.configure(text=t("onb_link_diar"))
         self._onb_link_seg.configure(text=t("onb_link_seg"))
+        self._onb_hint1.configure(text=t("onb_hint1"))
+        self._onb_hint2.configure(text=t("onb_hint2"))
         self._onb_step3.configure(text=t("onb_step3"))
         self._onb_btn_save.configure(text=t("onb_save"))
         self._onb_btn_browse.configure(text=t("browse_btn"))
@@ -873,9 +890,7 @@ class App(TkinterDnD.Tk if _DND else tk.Tk):
             self._banner.pack_forget()
             self._onb_steps.pack(fill="x")
             self._onb_done.pack_forget()
-            self._onboarding.pack(fill="x", padx=24, pady=(4, 0), after=self._divs[0])
             self._btn_start.pack_forget()
-            # Pre-fill token if saved
             _saved = config.HF_TOKEN or (TOKEN_FILE.read_text().strip() if TOKEN_FILE.exists() else "")
             if _saved and not self._onb_entry_token.get():
                 self._onb_entry_token.insert(0, _saved)
