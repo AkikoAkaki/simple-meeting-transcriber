@@ -14,6 +14,7 @@ import subprocess
 import sys
 import threading
 import tkinter as tk
+import webbrowser
 from pathlib import Path
 from tkinter import filedialog, ttk
 
@@ -232,6 +233,8 @@ class App(TkinterDnD.Tk if _DND else tk.Tk):
         self._token_visible = False
         self._checks: dict  = {}
         self._divs: list[tk.Frame] = []
+
+        self.protocol("WM_DELETE_WINDOW", self._on_close)
 
         # Output directory — persisted in user_settings.json
         _us = self._load_user_settings()
@@ -830,7 +833,12 @@ class App(TkinterDnD.Tk if _DND else tk.Tk):
     def _cancel(self):
         if self._proc and self._proc.poll() is None:
             self._proc.terminate()
-        # _run thread will see proc exit with non-zero and call _on_error
+            self._set_status("Cancelling…", "warn")
+
+    def _on_close(self):
+        if self._proc and self._proc.poll() is None:
+            self._proc.terminate()
+        self.destroy()
 
     def _run(self):
         cmd = [sys.executable, str(TRANSCRIBE_SCRIPT), str(self._video_path)]
@@ -861,6 +869,7 @@ class App(TkinterDnD.Tk if _DND else tk.Tk):
         fmt = _FORMAT_ARG.get(self._var_format.get(), "md")
         if fmt != "md":
             cmd += ["--output-format", fmt]
+        out_suffix = { "srt": ".srt", "txt": ".txt" }.get(fmt, ".md")
 
         env = os.environ.copy()
         env["PYTHONIOENCODING"] = "utf-8"
@@ -891,7 +900,7 @@ class App(TkinterDnD.Tk if _DND else tk.Tk):
             # Prefer the path transcribe.py actually wrote; fall back to the
             # expected location if the marker line wasn't captured.
             self._output_path = emitted_path or (
-                self._outdir_snapshot / f"{self._video_path.stem}.md")
+                self._outdir_snapshot / f"{self._video_path.stem}{out_suffix}")
             self.after(0, self._on_done)
         else:
             self.after(0, self._on_error, self._proc.returncode)
@@ -922,7 +931,7 @@ class App(TkinterDnD.Tk if _DND else tk.Tk):
 
     def _open_output(self):
         if self._output_path and self._output_path.exists():
-            os.startfile(str(self._output_path))
+            webbrowser.open(str(self._output_path))
 
     # ── Panel toggles ─────────────────────────────────────────────────────────
 

@@ -12,6 +12,7 @@ import argparse
 import logging
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 import json
@@ -45,6 +46,7 @@ class VideoHandler(FileSystemEventHandler):
     def __init__(self, dry_run: bool):
         self.dry_run = dry_run
         self._pending: dict[str, tuple[int, float]] = {}
+        self._lock = threading.Lock()
 
     def on_created(self, event):
         self._track(event.src_path)
@@ -63,7 +65,8 @@ class VideoHandler(FileSystemEventHandler):
             size = p.stat().st_size
         except FileNotFoundError:
             return
-        self._pending[str(p)] = (size, time.time())
+        with self._lock:
+            self._pending[str(p)] = (size, time.time())
         logging.info(f"Detected: {p.name} ({size / 1024 / 1024:.1f} MB)")
 
     def flush_ready(self):
@@ -71,41 +74,32 @@ class VideoHandler(FileSystemEventHandler):
         now = time.time()
         ready = []
 
-        for path_str, (last_size, last_changed) in list(self._pending.items()):
+        with self._lock:
+            snapshot = list(self._pending.items())
+        for path_str, (last_size, last_changed) in snapshot:
             p = Path(path_str)
             try:
                 current_size = p.stat().st_size
             except FileNotFoundError:
-                del self._pending[path_str]
+                with self._lock:
+                    self._pending.pop(path_str, None)
                 continue
 
             if current_size != last_size:
-                self._pending[path_str] = (current_size, now)
+                with self._lock:
+                    self._pending[path_str] = (current_size, now)
             elif now - last_changed >= config.STABLE_SECONDS:
                 if current_size >= config.MIN_FILE_SIZE_KB * 1024:
                     ready.append(p)
                 else:
                     logging.warning(f"Skipping too-small file: {p.name} ({current_size} bytes)")
-                del self._pending[path_str]
+                with self._lock:
+                    self._pending.pop(path_str, None)
 
         for p in ready:
             self._transcribe(p)
 
     def _transcribe(self, video_path: Path):
-        if config.ORGANIZE_BY_YEAR:
-            year = video_path.stem[:4]
-            if year.isdigit():
-                dest_dir = config.WATCH_DIR / year
-                dest_dir.mkdir(exist_ok=True)
-                new_path = dest_dir / video_path.name
-                try:
-                    video_path.rename(new_path)
-                    logging.info(f"Moved: {video_path.name} → {year}/")
-                    video_path = new_path
-                except OSError as e:
-                    logging.error(f"Could not move file: {e}")
-                    return
-
         logging.info(f"Transcribing: {video_path.name}")
         if self.dry_run:
             logging.info("[dry-run] skipping actual transcription")
@@ -119,7 +113,7 @@ class VideoHandler(FileSystemEventHandler):
             cmd,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
-            text=True,
+            text=True, encoding="utf-8", errors="replace",
         )
         for line in proc.stdout:
             logging.info(f"  {line.rstrip()}")
@@ -127,6 +121,17 @@ class VideoHandler(FileSystemEventHandler):
 
         if proc.returncode == 0:
             logging.info(f"Transcription complete: {video_path.name}")
+            if config.ORGANIZE_BY_YEAR:
+                year = video_path.stem[:4]
+                if year.isdigit():
+                    dest_dir = config.WATCH_DIR / year
+                    dest_dir.mkdir(exist_ok=True)
+                    new_path = dest_dir / video_path.name
+                    try:
+                        video_path.rename(new_path)
+                        logging.info(f"Moved: {video_path.name} → {year}/")
+                    except OSError as e:
+                        logging.error(f"Could not move file: {e}")
         else:
             logging.error(f"Transcription failed (exit {proc.returncode}): {video_path.name}")
 

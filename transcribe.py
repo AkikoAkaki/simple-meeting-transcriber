@@ -179,7 +179,7 @@ def run_whisper(wav_path: Path, whisper_json: Path, language: str | None) -> lis
     seg_iter, info = model.transcribe(
         str(wav_path),
         language=language,
-        word_timestamps=True,
+        word_timestamps=False,
         beam_size=5,
         vad_filter=True,
         vad_parameters=dict(min_silence_duration_ms=2000),
@@ -357,7 +357,7 @@ def generate_srt(segments: list[dict]) -> str:
     def _srt_ts(sec: float) -> str:
         h, rem = divmod(int(sec), 3600)
         m, s = divmod(rem, 60)
-        ms = round((sec - int(sec)) * 1000)
+        ms = min(round((sec - int(sec)) * 1000), 999)
         return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
 
     blocks = []
@@ -448,6 +448,11 @@ def _main():
         whisper_segments = run_whisper(paths["wav"], paths["whisper_json"], language)
 
     if not whisper_segments:
+        # Cache the empty result so we don't re-run Whisper every time
+        try:
+            paths["whisper_json"].write_text(json.dumps([], ensure_ascii=False), encoding="utf-8")
+        except OSError:
+            pass
         print("ERROR: No speech detected in audio.", flush=True)
         print("  Possible causes:", flush=True)
         print("  1. Audio is silent or contains only music/noise (no speech)", flush=True)
@@ -464,9 +469,12 @@ def _main():
 
     segments = merge_results(whisper_segments, speaker_turns)
 
-    import torchaudio
-    info = torchaudio.info(str(paths["wav"]))
-    total_sec = info.num_frames / info.sample_rate
+    try:
+        import torchaudio
+        info = torchaudio.info(str(paths["wav"]))
+        total_sec = info.num_frames / info.sample_rate
+    except Exception:
+        total_sec = segments[-1]["end"] if segments else 0
 
     fmt = args.output_format
     if fmt == "srt":
