@@ -39,7 +39,7 @@ def _system_is_dark() -> bool:
             return bool(val)
         except Exception:
             pass
-    return True
+    return False  # fallback: light theme (safer default)
 
 # ── Color themes ──────────────────────────────────────────────────────────────
 THEMES = {
@@ -588,9 +588,13 @@ class App(TkinterDnD.Tk if _DND else tk.Tk):
         ]
 
         self._checks = results
-        for line in lines:
-            self.after(0, self._append_log, line)
-        self.after(0, self._update_banner)
+        # Batch into one callback to prevent interleaving with transcription log
+        def _flush(captured_lines=lines):
+            if not self._running:
+                for line in captured_lines:
+                    self._append_log(line)
+            self._update_banner()
+        self.after(0, _flush)
 
     def _update_banner(self):
         c = self._c

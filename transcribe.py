@@ -387,10 +387,13 @@ def _main():
         whisper_segments = run_whisper(paths["wav"], paths["whisper_json"], language)
 
     if not whisper_segments:
-        print("ERROR: No speech detected in audio. Possible causes:", flush=True)
-        print("  - Audio is silent or contains no speech", flush=True)
-        print("  - Wrong --language setting (try omitting it for auto-detect)", flush=True)
-        print("  - Corrupted or truncated file", flush=True)
+        print("ERROR: No speech detected in audio.", flush=True)
+        print("  Possible causes:", flush=True)
+        print("  1. Audio is silent or contains only music/noise (no speech)", flush=True)
+        print("  2. WAV cache may be corrupted from a previous failed run.", flush=True)
+        print(f"     Delete it and retry: {paths['wav']}", flush=True)
+        print("  3. Wrong --language setting (try without it for auto-detect)", flush=True)
+        print("  4. Source file is corrupted or has no audio track", flush=True)
         sys.exit(1)
 
     if args.transcribe_only:
