@@ -1,5 +1,6 @@
 faster-whisper
 pyannote.audio
+torch          # GPU users: reinstall with CUDA (see README, "Performance" section)
 torchaudio
 watchdog
-tkinterdnd2  # optional, enables drag-and-drop in gui.py
+tkinterdnd2    # optional, enables drag-and-drop in gui.py

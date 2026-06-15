@@ -130,6 +130,7 @@ I18N = {
         "transcribe":    "Transcribe",
         "running":       "Running…",
         "cancel":        "Cancel",
+        "cancelled":     "Cancelled",
         "log_show":      "▸  Log",
         "log_hide":      "▾  Log",
         "open_btn":      "Open transcript →",
@@ -162,6 +163,7 @@ I18N = {
         "transcribe":    "开始转录",
         "running":       "转录中…",
         "cancel":        "取消",
+        "cancelled":     "已取消",
         "log_show":      "▸  日志",
         "log_hide":      "▾  日志",
         "open_btn":      "打开转录文件 →",
@@ -226,6 +228,7 @@ class App(TkinterDnD.Tk if _DND else tk.Tk):
         self._video_path:  Path | None = None
         self._output_path: Path | None = None
         self._running       = False
+        self._cancelled     = False
         self._proc: subprocess.Popen | None = None
         self._settings_open = False
         self._log_open      = True
@@ -398,7 +401,6 @@ class App(TkinterDnD.Tk if _DND else tk.Tk):
                                           font=FONT_TINY, relief="flat", cursor="hand2",
                                           bd=0, padx=8, pady=3)
         self._btn_token_save.pack(side="left", padx=(4, 0))
-
 
         self._divs.append(self._mk_div())
 
@@ -817,6 +819,7 @@ class App(TkinterDnD.Tk if _DND else tk.Tk):
             return
 
         self._running = True
+        self._cancelled = False
         self._outdir_snapshot = Path(self._var_outdir.get())
         self._btn_open.pack_forget()
         self._btn_start.configure(
@@ -832,7 +835,8 @@ class App(TkinterDnD.Tk if _DND else tk.Tk):
     def _cancel(self):
         if self._proc and self._proc.poll() is None:
             self._proc.terminate()
-            self._set_status("Cancelling…", "warn")
+        self._cancelled = True
+        self._set_status(self._t("cancelled"), "warn")
 
     def _on_close(self):
         if self._proc and self._proc.poll() is None:
@@ -908,6 +912,7 @@ class App(TkinterDnD.Tk if _DND else tk.Tk):
         self._progress.stop()
         self._progress.pack_forget()
         self._running = False
+        self._cancelled = False
         self._set_status(f"✓  {self._output_path.name}", "success")
         self._proc = None
         self._btn_start.configure(
@@ -919,7 +924,12 @@ class App(TkinterDnD.Tk if _DND else tk.Tk):
         self._progress.stop()
         self._progress.pack_forget()
         self._running = False
-        self._set_status(f"✗  exit {code} — see log", "danger")
+        was_cancelled = self._cancelled
+        self._cancelled = False
+        if was_cancelled:
+            self._set_status(self._t("cancelled"), "dim")
+        else:
+            self._set_status(f"✗  exit {code} — see log", "danger")
         self._proc = None
         self._btn_start.configure(
             text=self._t("transcribe"), command=self._start,
@@ -936,7 +946,10 @@ class App(TkinterDnD.Tk if _DND else tk.Tk):
             elif sys.platform == "darwin":
                 subprocess.run(["open", p])
             else:
-                subprocess.run(["xdg-open", p])
+                try:
+                    subprocess.run(["xdg-open", p])
+                except Exception:
+                    self._set_status(f"无法打开: {p}", "warn")
 
     # ── Panel toggles ─────────────────────────────────────────────────────────
 

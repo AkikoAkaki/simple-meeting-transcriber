@@ -2,7 +2,7 @@
 
 Automatically transcribe meeting recordings with speaker labels, powered by [Whisper](https://github.com/openai/whisper) and [pyannote](https://github.com/pyannote/pyannote-audio).
 
-Drop a video into the `inbox/` folder — a Markdown transcript appears in `transcripts/` with timestamps and speaker turns identified.
+Drop a video into the `inbox/` folder — a transcript appears in `transcripts/` with timestamps and speaker turns identified, in your choice of Markdown, SRT, or plain text.
 
 Works with English, Chinese, or any mixed-language audio. No cloud API needed; everything runs locally.
 
@@ -66,7 +66,7 @@ python transcribe.py inbox/my-meeting.mp4
 python watch.py
 ```
 
-Transcripts appear in `transcripts/` as `<original-filename>.md`.
+Transcripts appear in `transcripts/` as `<original-filename>.md` (or `.srt` / `.txt` depending on your output format choice).
 
 ---
 
@@ -104,6 +104,10 @@ python transcribe.py meeting.mp4 --transcribe-only
 
 # Re-run diarization on an already-transcribed file
 python transcribe.py meeting.mp4 --diarize-only
+
+# Change output format and directory
+python transcribe.py meeting.mp4 --output-format srt --output-dir ./subtitles
+python transcribe.py meeting.mp4 --output-format txt   # plain text, no timestamps
 
 # Override model, device, or speaker count (one-off, without editing config.py)
 python transcribe.py meeting.mp4 --model medium --device cpu --max-speakers 3
@@ -145,7 +149,7 @@ inbox/meeting.mp4
        └─▶ pyannote ─────────▶ cache/_meeting_diarize.json
                                         │
                                         ▼ merge
-                              transcripts/meeting.md
+                               transcripts/meeting.{md,srt,txt}
 ```
 
 Intermediate files in `cache/` are kept so you can re-run either step independently. Delete them any time to free disk space.
@@ -169,7 +173,10 @@ On CPU, expect 5–10× longer. Use `WHISPER_MODEL = "medium"` for a faster / lo
 ## FAQ
 
 **Can I use this without speaker diarization?**
-Yes. Pass `--transcribe-only` or leave `HF_TOKEN` empty to skip diarization.
+Yes. Pass `--transcribe-only` or leave `HF_TOKEN` empty to skip diarization. In the GUI, select "Transcribe only" from the Pipeline dropdown.
+
+**What output formats are available?**
+Markdown (`.md` — default, with timestamps and speaker labels), SRT (`.srt` — subtitle file for video players), or plain text (`.txt` — just the transcript text). Select in the GUI or use `--output-format`.
 
 **Which model should I use?**
 `large-v3` for best quality. `medium` is a good balance for weaker hardware. `small` / `base` for speed.
