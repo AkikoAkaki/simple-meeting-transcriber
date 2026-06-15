@@ -1,6 +1,6 @@
-# Simple Meeting Transcriber
+# Simple Video Transcriber
 
-> Transcribe meeting recordings with speaker labels — fully local, no data ever leaves your machine.
+> Transcribe any video or audio with speaker labels — fully local, no data ever leaves your machine.
 
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue)](https://www.python.org/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
@@ -12,7 +12,7 @@
 
 ## What it does
 
-Drop a video or audio file onto the app. Get back a transcript with speaker labels, timestamps, and your choice of output format — all processed locally using [faster-whisper](https://github.com/SYSTRAN/faster-whisper) and [pyannote.audio](https://github.com/pyannote/pyannote-audio).
+Drop any video or audio file onto the app — meetings, lectures, interviews, podcasts. Get back a transcript with speaker labels, timestamps, and your choice of output format — all processed locally using [faster-whisper](https://github.com/SYSTRAN/faster-whisper) and [pyannote.audio](https://github.com/pyannote/pyannote-audio).
 
 ```
 ### [00:00:00 – 00:00:16] SPEAKER_00
@@ -42,13 +42,13 @@ Output formats: **Markdown** (`.md`), **SRT subtitles** (`.srt`), or **plain tex
 
 ### Windows
 
-1. [Download the zip](https://github.com/AkikoAkaki/simple-meeting-transcriber/releases) and extract it
+1. [Download the zip](https://github.com/AkikoAkaki/simple-video-transcriber/releases) and extract it
 2. Double-click `install.bat`
 3. Double-click `start.bat`
 
 ### macOS
 
-1. [Download the zip](https://github.com/AkikoAkaki/simple-meeting-transcriber/releases) and extract it
+1. [Download the zip](https://github.com/AkikoAkaki/simple-video-transcriber/releases) and extract it
 2. Double-click `install.command` — enter your password if prompted (for Homebrew)
 3. Double-click `start.command`
 
@@ -70,7 +70,7 @@ The HuggingFace token is required only for speaker diarization. If you skip it, 
 
 ## Performance
 
-Measured on RTX 4060 (8 GB VRAM), 25-minute meeting, `large-v3` model:
+Measured on RTX 4060 (8 GB VRAM), 25-minute video, `large-v3` model:
 
 | Step | Time |
 |------|------|

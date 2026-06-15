@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 simple-video-transcriber — transcribe.py
-Transcribe a meeting recording with speaker labels.
+Transcribe a video or audio file with speaker labels.
 
 Usage:
   python transcribe.py <video>                    # full pipeline
@@ -320,7 +320,7 @@ def generate_markdown(segments: list[dict], source_file: str, total_sec: float,
                       has_diarization: bool, language: str | None) -> str:
     lang_str = language or "auto-detect"
     lines = [
-        "# Meeting Transcript", "",
+        "# Transcript", "",
         f"**Source**: {source_file}",
         f"**Duration**: {format_time(total_sec)} ({int(total_sec)}s)",
         f"**Model**: Whisper {config.WHISPER_MODEL}  |  Language: {lang_str}",
@@ -385,7 +385,7 @@ def main():
 
 
 def _main():
-    parser = argparse.ArgumentParser(description="Transcribe a meeting recording with speaker labels")
+    parser = argparse.ArgumentParser(description="Transcribe a video or audio file with speaker labels")
     parser.add_argument("input", help="Path to video/audio file")
     parser.add_argument("--language", default=None,
                         help="Language code (en/zh/ja/...). Default: auto-detect")

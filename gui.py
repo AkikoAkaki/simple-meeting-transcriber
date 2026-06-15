@@ -119,7 +119,7 @@ THEMES = {
 I18N = {
     "en": {
         "title":         "Simple Video Transcriber",
-        "subtitle":      "Transcribe meetings with speaker labels",
+        "subtitle":      "Transcribe videos with speaker labels",
         "drop_hint":     "Drop video here  ·  or click to browse",
         "no_file":       "No file selected",
         "xlang_label":   "Transcription language",
@@ -150,7 +150,7 @@ I18N = {
         "details_btn":   "Details ↓",
         "set_token_btn": "Set token ▸",
         "onb_welcome":   "👋 Welcome to Simple Video Transcriber",
-        "onb_subtitle":   "Fully local meeting transcription — nothing leaves your computer.",
+        "onb_subtitle":   "Fully local video transcription — nothing leaves your computer.",
         "onb_step1":     "Step 1 — Get a free HuggingFace token",
         "onb_link_hf":   "Open huggingface.co/settings/tokens →",
         "onb_hint1":     "On the page: New token → name it (e.g. \"transcribe\") → select Read → Generate. Paste the key here.",
