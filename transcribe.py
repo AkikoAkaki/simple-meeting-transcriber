@@ -350,6 +350,26 @@ def generate_markdown(segments: list[dict], source_file: str, total_sec: float,
     return "\n".join(lines)
 
 
+def generate_srt(segments: list[dict]) -> str:
+    if not segments:
+        return ""
+
+    def _srt_ts(sec: float) -> str:
+        h, rem = divmod(int(sec), 3600)
+        m, s = divmod(rem, 60)
+        ms = round((sec - int(sec)) * 1000)
+        return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
+
+    blocks = []
+    for i, seg in enumerate(segments, 1):
+        blocks.append(
+            f"{i}\n"
+            f"{_srt_ts(seg['start'])} --> {_srt_ts(seg['end'])}\n"
+            f"{seg['text'].strip()}"
+        )
+    return "\n\n".join(blocks)
+
+
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 def main():
@@ -382,6 +402,8 @@ def _main():
                         help="Maximum number of speakers. Overrides config.py")
     parser.add_argument("--output-dir", default=None,
                         help="Directory for output .md file. Overrides config.py TRANSCRIPT_DIR")
+    parser.add_argument("--output-format", choices=["md", "srt", "txt"], default="md",
+                        help="Output format: md (Markdown), srt (subtitles), txt (plain text)")
     args = parser.parse_args()
 
     if args.model:
@@ -446,10 +468,20 @@ def _main():
     info = torchaudio.info(str(paths["wav"]))
     total_sec = info.num_frames / info.sample_rate
 
-    md = generate_markdown(segments, input_path.name, total_sec, bool(speaker_turns), language)
-    paths["output_md"].write_text(md, encoding="utf-8")
+    fmt = args.output_format
+    if fmt == "srt":
+        content = generate_srt(segments)
+        out_path = paths["output_md"].with_suffix(".srt")
+    elif fmt == "txt":
+        content = "\n\n".join(seg["text"].strip() for seg in segments)
+        out_path = paths["output_md"].with_suffix(".txt")
+    else:
+        content = generate_markdown(segments, input_path.name, total_sec,
+                                    bool(speaker_turns), language)
+        out_path = paths["output_md"]
 
-    print(f"\n✓ Done → {paths['output_md']}", flush=True)
+    out_path.write_text(content, encoding="utf-8")
+    print(f"\n✓ Done → {out_path}", flush=True)
     print(f"  Cache files in {config.CACHE_DIR} can be deleted to free disk space.", flush=True)
 
 

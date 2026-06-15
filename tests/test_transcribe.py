@@ -51,3 +51,34 @@ def test_run_whisper_deletes_corrupt_cache(tmp_path, monkeypatch):
     result = transcribe.run_whisper(tmp_path / "fake.wav", whisper_json, None)
     assert str(whisper_json) in deleted or not whisper_json.exists(), \
         "corrupt cache file should be deleted before re-transcribing"
+
+
+def test_generate_srt_basic():
+    """generate_srt produces valid SRT with correct block structure."""
+    import transcribe
+    segments = [
+        {"start": 0.0, "end": 3.5, "text": "Hello world", "speaker": "SPEAKER_A"},
+        {"start": 4.1, "end": 7.0, "text": "How are you?", "speaker": "SPEAKER_B"},
+    ]
+    srt = transcribe.generate_srt(segments)
+    lines = srt.strip().split("\n")
+    assert lines[0] == "1"
+    assert lines[1] == "00:00:00,000 --> 00:00:03,500"
+    assert lines[2] == "Hello world"
+    assert lines[3] == ""
+    assert lines[4] == "2"
+    assert lines[5] == "00:00:04,100 --> 00:00:07,000"
+    assert lines[6] == "How are you?"
+
+
+def test_generate_srt_timestamp_format():
+    """SRT timestamps use comma as decimal separator and HH:MM:SS,mmm format."""
+    import transcribe
+    segments = [{"start": 3661.5, "end": 3665.123, "text": "Test", "speaker": "S"}]
+    srt = transcribe.generate_srt(segments)
+    assert "01:01:01,500 --> 01:01:05,123" in srt
+
+
+def test_generate_srt_empty():
+    import transcribe
+    assert transcribe.generate_srt([]) == ""

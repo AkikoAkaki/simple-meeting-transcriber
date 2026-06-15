@@ -121,6 +121,7 @@ I18N = {
         "device_lbl":    "Device",
         "speaker_lbl":   "Speakers",
         "pipeline_lbl":  "Pipeline",
+        "format_lbl":   "Output format",
         "token_lbl":     "HF Token",
         "token_hint":    "paste token here",
         "token_save":    "Save",
@@ -152,6 +153,7 @@ I18N = {
         "device_lbl":    "设备",
         "speaker_lbl":   "说话人数",
         "pipeline_lbl":  "流水线",
+        "format_lbl":   "输出格式",
         "token_lbl":     "HF Token",
         "token_hint":    "在此粘贴 token",
         "token_save":    "保存",
@@ -186,6 +188,8 @@ MODELS   = ["large-v3", "medium", "small", "base", "tiny"]
 DEVICES  = ["auto", "cuda", "cpu"]
 SPEAKERS = ["auto", "2", "3", "4", "5"]
 PIPELINE_MODES = ["Full pipeline", "Transcribe only", "Re-diarize only"]
+OUTPUT_FORMATS = ["Markdown (.md)", "SRT subtitles (.srt)", "Plain text (.txt)"]
+_FORMAT_ARG = {"Markdown (.md)": "md", "SRT subtitles (.srt)": "srt", "Plain text (.txt)": "txt"}
 
 def _make_fonts(face: str):
     """Build the (FONT, FONT_BOLD, FONT_HEAD, FONT_TINY) tuple for a font face."""
@@ -351,12 +355,14 @@ class App(TkinterDnD.Tk if _DND else tk.Tk):
         self._var_device   = tk.StringVar(value=config.DEVICE)
         self._var_speakers = tk.StringVar(value="auto")
         self._var_pipeline = tk.StringVar(value=PIPELINE_MODES[0])
+        self._var_format   = tk.StringVar(value=OUTPUT_FORMATS[0])
 
         rows = [
             ("_lbl_model",    self._var_model,    MODELS),
             ("_lbl_device",   self._var_device,   DEVICES),
             ("_lbl_speaker",  self._var_speakers, SPEAKERS),
             ("_lbl_pipeline", self._var_pipeline, PIPELINE_MODES),
+            ("_lbl_format",   self._var_format,   OUTPUT_FORMATS),
         ]
         for i, (attr, var, vals) in enumerate(rows):
             lbl = tk.Label(self._grid_settings, bg=c["bg"], font=FONT, width=12, anchor="w")
@@ -474,7 +480,7 @@ class App(TkinterDnD.Tk if _DND else tk.Tk):
                                  activebackground=c["bg"], activeforeground=c["fg"])
 
         for attr in ("_lbl_model", "_lbl_device", "_lbl_speaker", "_lbl_pipeline",
-                     "_lbl_token", "_lbl_outdir"):
+                     "_lbl_format", "_lbl_token", "_lbl_outdir"):
             getattr(self, attr).configure(bg=c["bg"], fg=c["fg"])
 
         self._entry_token.configure(bg=c["bg2"], fg=c["fg"],
@@ -551,6 +557,7 @@ class App(TkinterDnD.Tk if _DND else tk.Tk):
         self._lbl_outdir.configure(text=t("outdir_lbl"))
         self._btn_outdir.configure(text=t("browse_btn"))
         self._lbl_pipeline.configure(text=t("pipeline_lbl"))
+        self._lbl_format.configure(text=t("format_lbl"))
         self._btn_start.configure(text=t("transcribe"))
         self._btn_log.configure(text=t("log_hide") if self._log_open else t("log_show"))
         self._btn_open.configure(text=t("open_btn"))
@@ -850,6 +857,10 @@ class App(TkinterDnD.Tk if _DND else tk.Tk):
             cmd += ["--max-speakers", spk]
 
         cmd += ["--output-dir", str(self._outdir_snapshot)]
+
+        fmt = _FORMAT_ARG.get(self._var_format.get(), "md")
+        if fmt != "md":
+            cmd += ["--output-format", fmt]
 
         env = os.environ.copy()
         env["PYTHONIOENCODING"] = "utf-8"
