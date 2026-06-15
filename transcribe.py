@@ -26,6 +26,16 @@ if hasattr(sys.stdout, "reconfigure"):
 if hasattr(sys.stderr, "reconfigure"):
     sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
+import warnings
+import logging
+
+# Suppress verbose/cosmetic warnings from pyannote and huggingface_hub
+logging.getLogger("huggingface_hub").setLevel(logging.ERROR)
+logging.getLogger("pyannote").setLevel(logging.ERROR)
+warnings.filterwarnings("ignore", message=".*TensorFloat-32.*")
+warnings.filterwarnings("ignore", message=r".*std\(\).*degrees of freedom.*")
+warnings.filterwarnings("ignore", message=".*resume_download.*")
+
 import config
 
 # ── Compatibility patches ─────────────────────────────────────────────────────
@@ -38,14 +48,23 @@ def _patched_download(*args, **kwargs):
     return _orig_download(*args, **kwargs)
 _hf_dl.hf_hub_download = _patched_download
 
-# PyTorch ≥2.6 tightened weights_only; pyannote checkpoints need False
-import torch as _torch, functools as _functools
-_orig_load = _torch.load
-@_functools.wraps(_orig_load)
-def _patched_load(*args, **kwargs):
-    kwargs["weights_only"] = False
-    return _orig_load(*args, **kwargs)
-_torch.load = _patched_load
+import contextlib as _contextlib
+
+@_contextlib.contextmanager
+def _allow_unsafe_torch_load():
+    """Temporarily allow weights_only=False — needed for pyannote checkpoints only."""
+    import torch
+    import functools
+    orig = torch.load
+    @functools.wraps(orig)
+    def _unsafe(*args, **kwargs):
+        kwargs["weights_only"] = False
+        return orig(*args, **kwargs)
+    torch.load = _unsafe
+    try:
+        yield
+    finally:
+        torch.load = orig
 # ─────────────────────────────────────────────────────────────────────────────
 
 
@@ -123,11 +142,16 @@ def run_whisper(wav_path: Path, whisper_json: Path, language: str | None) -> lis
 
     if whisper_json.exists():
         print("[2/4] Loading cached Whisper result...", flush=True)
-        segs = json.loads(whisper_json.read_text(encoding="utf-8"))
+        try:
+            segs = json.loads(whisper_json.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            segs = []
         if not segs:
-            print("[WARN] Cache has 0 segments — previous run may have failed.", flush=True)
-            print(f"       Deleting stale cache and re-transcribing...", flush=True)
-            whisper_json.unlink()
+            print("[WARN] Cache is empty or corrupt — re-transcribing...", flush=True)
+            try:
+                whisper_json.unlink()
+            except OSError:
+                pass
         else:
             print(f"      {len(segs)} segments from cache", flush=True)
             return segs
@@ -182,9 +206,19 @@ def run_diarization(wav_path: Path, diarize_json: Path) -> list[dict]:
 
     if diarize_json.exists():
         print("[3/4] Loading cached diarization result...", flush=True)
-        turns = json.loads(diarize_json.read_text(encoding="utf-8"))
-        print(f"      {len(turns)} turns from cache", flush=True)
-        return turns
+        try:
+            turns = json.loads(diarize_json.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            turns = []
+        if not turns:
+            print("[WARN] Diarization cache is empty or corrupt — re-running...", flush=True)
+            try:
+                diarize_json.unlink()
+            except OSError:
+                pass
+        else:
+            print(f"      {len(turns)} turns from cache", flush=True)
+            return turns
 
     token = get_hf_token()
     if not token:
@@ -195,24 +229,25 @@ def run_diarization(wav_path: Path, diarize_json: Path) -> list[dict]:
     os.environ["HUGGING_FACE_HUB_TOKEN"] = token  # legacy name, some versions need it
     print("[3/4] Loading pyannote/speaker-diarization-3.1...", flush=True)
     print("      (First run: downloading pyannote models ~500 MB — please wait)", flush=True)
-    try:
-        # pyannote >= 3.0 uses token= ; older versions used use_auth_token=
+    with _allow_unsafe_torch_load():
         try:
-            pipeline = Pipeline.from_pretrained(
-                "pyannote/speaker-diarization-3.1", token=token)
-        except TypeError:
-            pipeline = Pipeline.from_pretrained(
-                "pyannote/speaker-diarization-3.1", use_auth_token=token)
-    except Exception as e:
-        err = str(e)
-        if any(k in err for k in ("401", "403", "gated", "unauthorized", "PermissionError")):
-            print("ERROR: HuggingFace access denied. Check that:", flush=True)
-            print("  1. HF_TOKEN is valid — https://hf.co/settings/tokens", flush=True)
-            print("  2. Model terms accepted — https://hf.co/pyannote/speaker-diarization-3.1", flush=True)
-            print("  3. Model terms accepted — https://hf.co/pyannote/segmentation-3.0", flush=True)
-        else:
-            print(f"ERROR: Failed to load diarization model: {e}", flush=True)
-        return []
+            # pyannote >= 3.0 uses token= ; older versions used use_auth_token=
+            try:
+                pipeline = Pipeline.from_pretrained(
+                    "pyannote/speaker-diarization-3.1", token=token)
+            except TypeError:
+                pipeline = Pipeline.from_pretrained(
+                    "pyannote/speaker-diarization-3.1", use_auth_token=token)
+        except Exception as e:
+            err = str(e)
+            if any(k in err for k in ("401", "403", "gated", "unauthorized", "PermissionError")):
+                print("ERROR: HuggingFace access denied. Check that:", flush=True)
+                print("  1. HF_TOKEN is valid — https://hf.co/settings/tokens", flush=True)
+                print("  2. Model terms accepted — https://hf.co/pyannote/speaker-diarization-3.1", flush=True)
+                print("  3. Model terms accepted — https://hf.co/pyannote/segmentation-3.0", flush=True)
+            else:
+                print(f"ERROR: Failed to load diarization model: {e}", flush=True)
+            return []
 
     device = _resolve_device()
     if device == "cuda":
@@ -345,6 +380,8 @@ def _main():
                         help="Compute device (auto/cuda/cpu). Overrides config.py")
     parser.add_argument("--max-speakers", default=None, type=int,
                         help="Maximum number of speakers. Overrides config.py")
+    parser.add_argument("--output-dir", default=None,
+                        help="Directory for output .md file. Overrides config.py TRANSCRIPT_DIR")
     args = parser.parse_args()
 
     if args.model:
@@ -353,6 +390,8 @@ def _main():
         config.DEVICE = args.device
     if args.max_speakers is not None:
         config.MAX_SPEAKERS = args.max_speakers
+    if args.output_dir:
+        config.TRANSCRIPT_DIR = Path(args.output_dir)
 
     import platform
     print(f"Python {sys.version.split()[0]} | {platform.system()} {platform.release()}", flush=True)
