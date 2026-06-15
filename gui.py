@@ -755,7 +755,7 @@ class App(TkinterDnD.Tk if _DND else tk.Tk):
                     "  → pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu121",
                     "    (replace cu121 with your CUDA version)",
                 ]
-        except ImportError:
+        except Exception:
             results["torch"] = (False, False, None)
             lines += [
                 "✗ torch not installed",
@@ -768,7 +768,7 @@ class App(TkinterDnD.Tk if _DND else tk.Tk):
             ver = getattr(faster_whisper, "__version__", "installed")
             results["whisper"] = (True, ver)
             lines.append(f"✓ faster-whisper {ver}")
-        except ImportError:
+        except Exception:
             results["whisper"] = (False, None)
             lines += [
                 "✗ faster-whisper not installed",
@@ -781,7 +781,7 @@ class App(TkinterDnD.Tk if _DND else tk.Tk):
             ver = getattr(pyannote.audio, "__version__", "installed")
             results["pyannote"] = (True, ver)
             lines.append(f"✓ pyannote.audio {ver}")
-        except ImportError:
+        except Exception:
             results["pyannote"] = (False, None)
             lines += [
                 "✗ pyannote.audio not installed",
@@ -789,7 +789,10 @@ class App(TkinterDnD.Tk if _DND else tk.Tk):
             ]
 
         # HF token
-        token = config.HF_TOKEN or (TOKEN_FILE.read_text().strip() if TOKEN_FILE.exists() else "")
+        try:
+            token = config.HF_TOKEN or (TOKEN_FILE.read_text().strip() if TOKEN_FILE.exists() else "")
+        except Exception:
+            token = ""
         results["token"] = bool(token)
         if token:
             lines.append("✓ HF token configured")
