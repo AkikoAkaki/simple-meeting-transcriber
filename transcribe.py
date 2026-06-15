@@ -145,9 +145,7 @@ def run_whisper(wav_path: Path, whisper_json: Path, language: str | None) -> lis
         try:
             segs = json.loads(whisper_json.read_text(encoding="utf-8"))
         except (json.JSONDecodeError, OSError):
-            segs = []
-        if not segs:
-            print("[WARN] Cache is empty or corrupt — re-transcribing...", flush=True)
+            print("[WARN] Cache is corrupt — re-transcribing...", flush=True)
             try:
                 whisper_json.unlink()
             except OSError:
@@ -209,9 +207,7 @@ def run_diarization(wav_path: Path, diarize_json: Path) -> list[dict]:
         try:
             turns = json.loads(diarize_json.read_text(encoding="utf-8"))
         except (json.JSONDecodeError, OSError):
-            turns = []
-        if not turns:
-            print("[WARN] Diarization cache is empty or corrupt — re-running...", flush=True)
+            print("[WARN] Diarization cache is corrupt — re-running...", flush=True)
             try:
                 diarize_json.unlink()
             except OSError:
@@ -448,11 +444,6 @@ def _main():
         whisper_segments = run_whisper(paths["wav"], paths["whisper_json"], language)
 
     if not whisper_segments:
-        # Cache the empty result so we don't re-run Whisper every time
-        try:
-            paths["whisper_json"].write_text(json.dumps([], ensure_ascii=False), encoding="utf-8")
-        except OSError:
-            pass
         print("ERROR: No speech detected in audio.", flush=True)
         print("  Possible causes:", flush=True)
         print("  1. Audio is silent or contains only music/noise (no speech)", flush=True)

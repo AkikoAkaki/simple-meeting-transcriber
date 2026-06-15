@@ -14,7 +14,6 @@ import subprocess
 import sys
 import threading
 import tkinter as tk
-import webbrowser
 from pathlib import Path
 from tkinter import filedialog, ttk
 
@@ -931,7 +930,13 @@ class App(TkinterDnD.Tk if _DND else tk.Tk):
 
     def _open_output(self):
         if self._output_path and self._output_path.exists():
-            webbrowser.open(str(self._output_path))
+            p = str(self._output_path)
+            if sys.platform == "win32":
+                os.startfile(p)
+            elif sys.platform == "darwin":
+                subprocess.run(["open", p])
+            else:
+                subprocess.run(["xdg-open", p])
 
     # ── Panel toggles ─────────────────────────────────────────────────────────
 
