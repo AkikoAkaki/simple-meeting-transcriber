@@ -152,12 +152,12 @@ I18N = {
         "onb_welcome":   "👋 Welcome to Simple Video Transcriber",
         "onb_subtitle":   "Fully local meeting transcription — nothing leaves your computer.",
         "onb_step1":     "Step 1 — Get a free HuggingFace token",
-        "onb_link_hf":   "Open hf.co/settings/tokens →",
-        "onb_hint1":     "On the page: New token → name it → type Read → Generate. Paste the key here.",
+        "onb_link_hf":   "Open huggingface.co/settings/tokens →",
+        "onb_hint1":     "On the page: New token → name it (e.g. \"transcribe\") → select Read → Generate. Paste the key here.",
         "onb_step2":     "Step 2 — Accept model licenses (one-time, requires login)",
         "onb_link_diar": "License: diarization →",
         "onb_link_seg":  "License: segmentation →",
-        "onb_hint2":     "On each page: log in → click \"Agree and access repository\". Fill in any username.",
+        "onb_hint2":     "On each page: log in → \"Agree and access repository\". Fill in anything for username / organization.",
         "onb_step3":     "Step 3 — Output folder",
         "onb_save":      "Save",
         "onb_ready":     "✓ Ready — drop a video file above to transcribe.",
@@ -197,12 +197,12 @@ I18N = {
         "onb_welcome":   "👋 欢迎使用 Simple Video Transcriber",
         "onb_subtitle":   "全自动会议转录 — 完全本地运行，无需上传。",
         "onb_step1":     "第一步 — 获取免费的 HuggingFace Token",
-        "onb_link_hf":   "打开 hf.co/settings/tokens →",
-        "onb_hint1":     "在打开的页面中：新建 Token → 起个名字 → 选 Read → 点 Generate。粘贴生成的 key。",
+        "onb_link_hf":   "打开 huggingface.co/settings/tokens →",
+        "onb_hint1":     "在网页上：New token → 起个名字（如 transcribe）→ 选 Read → Generate。把生成的 key 粘贴到此处。",
         "onb_step2":     "第二步 — 接受模型使用协议（登录后操作，仅需一次）",
         "onb_link_diar": "协议: 说话人分离 →",
         "onb_link_seg":  "协议: 语音分割 →",
-        "onb_hint2":     "在每个页面：登录 → 点击 \"Agree and access repository\"。随便填个用户名即可。",
+        "onb_hint2":     "在每个页面：登录 → 点击 \"Agree and access repository\"。用户名和组织名随便填即可。",
         "onb_step3":     "第三步 — 输出目录",
         "onb_save":      "保存",
         "onb_ready":     "✓ 已就绪 — 将视频拖入上方区域即可开始转录。",
@@ -460,11 +460,12 @@ class App(TkinterDnD.Tk if _DND else tk.Tk):
         r1 = tk.Frame(self._onb_steps, bg=c["bg2"])
         r1.pack(fill="x", padx=20, pady=(2, 2))
         self._onb_link_hf = tk.Button(r1, font=FONT_TINY, cursor="hand2", bd=0,
-            command=lambda: webbrowser.open("https://hf.co/settings/tokens"))
+            command=lambda: webbrowser.open("https://huggingface.co/settings/tokens"))
         self._onb_link_hf.pack(side="left")
         self._onb_hint1 = tk.Label(self._onb_steps, font=FONT_TINY, fg=c["fg_dim"],
-                                    bg=c["bg2"], anchor="w", justify="left")
-        self._onb_hint1.pack(fill="x", padx=20, pady=(0, 4))
+                                    bg=c["bg2"], anchor="w", justify="left",
+                                    wraplength=520)
+        self._onb_hint1.pack(fill="x", padx=20, pady=(0, 6))
         r1b = tk.Frame(self._onb_steps, bg=c["bg2"])
         r1b.pack(fill="x", padx=20, pady=(2, 4))
         self._onb_entry_token = tk.Entry(r1b, show="•", font=FONT, width=28,
@@ -487,8 +488,9 @@ class App(TkinterDnD.Tk if _DND else tk.Tk):
             command=lambda: webbrowser.open("https://hf.co/pyannote/segmentation-3.0"))
         self._onb_link_seg.pack(side="left", padx=(8, 0))
         self._onb_hint2 = tk.Label(self._onb_steps, font=FONT_TINY, fg=c["fg_dim"],
-                                    bg=c["bg2"], anchor="w", justify="left")
-        self._onb_hint2.pack(fill="x", padx=20, pady=(0, 4))
+                                    bg=c["bg2"], anchor="w", justify="left",
+                                    wraplength=520)
+        self._onb_hint2.pack(fill="x", padx=20, pady=(0, 6))
 
         # -- Step 3: output dir --
         self._onb_step3 = tk.Label(self._onb_steps, font=FONT_BOLD,
