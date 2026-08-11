@@ -348,7 +348,7 @@ def get_hf_token() -> str:
             print(f"[INFO] Using HF token from hf_token.txt", flush=True)
             return token
     print("[INFO] No HuggingFace token found — skipping speaker diarization.", flush=True)
-    print("       To enable: set HF_TOKEN in config.py, or create hf_token.txt", flush=True)
+    print("       To enable: save a token in the tray dashboard (or set HF_TOKEN env var)", flush=True)
     print("       Accept model terms at: https://hf.co/pyannote/speaker-diarization-3.1", flush=True)
     return ""
 
