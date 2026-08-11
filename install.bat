@@ -1,63 +1,99 @@
 @echo off
-title Simple Video Transcriber — Installer
-echo.
-echo ========================================
-echo   Simple Video Transcriber — Installer
-echo ========================================
+setlocal enabledelayedexpansion
+cd /d "%~dp0"
+
+echo ===================================================
+echo  Simple Video Transcriber - Installation Script
+echo ===================================================
 echo.
 
-:: ── Python ──
-where python >nul 2>nul
+:: 1. Check Python
+echo Checking Python installation...
+python --version >nul 2>&1
 if %errorlevel% neq 0 (
-    echo Python not found. Installing via winget...
-    winget install Python.Python.3.12 --silent --accept-package-agreements --accept-source-agreements
-    if %errorlevel% neq 0 (
-        echo.
-        echo ERROR: Could not install Python automatically.
-        echo Please install Python 3.10+ from https://python.org and run this script again.
-        pause
-        exit /b 1
-    )
-    echo Python installed. Please close and re-open this window, then run install.bat again.
-    pause
-    exit /b
+    echo [ERROR] Python is not installed or not in PATH.
+    echo Please install Python 3.10+ and check "Add Python to PATH" during installation.
+    goto :FAIL
 )
-python --version
-echo.
 
-:: ── ffmpeg ──
-where ffmpeg >nul 2>nul
+:: 2. Check ffmpeg
+echo Checking ffmpeg installation...
+ffmpeg -version >nul 2>&1
 if %errorlevel% neq 0 (
-    echo ffmpeg not found. Installing via winget...
-    winget install Gyan.FFmpeg --silent --accept-package-agreements --accept-source-agreements
-    if %errorlevel% neq 0 (
-        echo.
-        echo WARNING: Could not install ffmpeg automatically.
-        echo Please install ffmpeg from https://ffmpeg.org/download.html
-        echo and add it to your PATH.
+    echo [WARNING] ffmpeg was not found in your PATH.
+    echo Transcription requires ffmpeg.
+    echo Attempting to check if winget is available to install ffmpeg...
+    winget --version >nul 2>&1
+    if %errorlevel% equ 0 (
+        echo [INFO] winget is available. Installing ffmpeg via winget...
+        winget install Gyan.FFmpeg --silent --accept-package-agreements --accept-source-agreements
+        if !errorlevel! neq 0 (
+            echo [ERROR] winget installation failed. Please install ffmpeg manually: https://ffmpeg.org/download.html
+            goto :FAIL
+        ) else (
+            echo [INFO] winget finished installing ffmpeg.
+        )
     ) else (
-        echo ffmpeg installed.
+        echo [ERROR] winget is unavailable. Please install ffmpeg manually: https://ffmpeg.org/download.html
+        goto :FAIL
     )
-) else (
-    echo ffmpeg found.
 )
-echo.
-
-:: ── Python dependencies ──
-echo Installing Python packages...
-pip install -r requirements.txt
+ffmpeg -version >nul 2>&1
 if %errorlevel% neq 0 (
-    echo.
-    echo WARNING: Some packages may have failed to install.
-    echo Try running: pip install -r requirements.txt
+    echo [ERROR] ffmpeg is still unavailable in this terminal.
+    echo Close this window, open a new one, and run install.bat again.
+    goto :FAIL
+)
+echo [OK] ffmpeg is installed.
+
+:: 3. Create Virtual Environment
+echo.
+echo Creating Python virtual environment (.venv)...
+if exist ".venv" (
+    echo [INFO] .venv folder already exists, skipping creation.
+) else (
+    python -m venv .venv
+    if !errorlevel! neq 0 (
+        echo [ERROR] Failed to create virtual environment.
+        goto :FAIL
+    )
+    echo [OK] Virtual environment created.
 )
 
+:: 4. Install Dependencies
 echo.
-echo ========================================
-echo   Installation complete!
+echo Installing dependencies from requirements.txt...
+call .venv\Scripts\activate.bat
+if %errorlevel% neq 0 (
+    echo [ERROR] Failed to activate virtual environment.
+    goto :FAIL
+)
+
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
+if %errorlevel% neq 0 (
+    echo [ERROR] Failed to install dependencies.
+    goto :FAIL
+)
+echo [OK] All dependencies installed.
+
 echo.
-echo   Double-click start.bat to launch
-echo   Simple Video Transcriber.
-echo ========================================
+echo ===================================================
+echo  Installation Completed Successfully!
+echo ===================================================
+echo.
+echo To start the application in the background:
+echo   Double-click: start.bat
+echo.
+echo To configure Windows auto-start at login:
+echo   Run: powershell -ExecutionPolicy Bypass -File setup_autostart.ps1
 echo.
 pause
+exit /b 0
+
+:FAIL
+echo.
+echo [FATAL] Installation failed. Please check the error messages above.
+echo.
+pause
+exit /b 1

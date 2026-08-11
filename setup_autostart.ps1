@@ -1,12 +1,13 @@
-# meeting-transcriber — setup_autostart.ps1
-# Registers watch.py as a Windows Task Scheduler task that starts at login.
+# simple-video-transcriber — setup_autostart.ps1
+# Registers the tray controller as a Windows Task Scheduler task that starts at login.
 # Run once with: powershell -ExecutionPolicy Bypass -File setup_autostart.ps1
 
 $ErrorActionPreference = "Stop"
 
-$pythonExe = python -c "import sys; print(sys.executable)"
+$venvPython = Join-Path $PSScriptRoot ".venv\Scripts\python.exe"
+$pythonExe = if (Test-Path $venvPython) { $venvPython } else { python -c "import sys; print(sys.executable)" }
 $pythonw   = $pythonExe -replace "python\.exe$", "pythonw.exe"
-$script    = Join-Path $PSScriptRoot "watch.py"
+$script    = Join-Path $PSScriptRoot "tray_app.py"
 
 if (-not (Test-Path $pythonw)) {
     Write-Warning "pythonw.exe not found at $pythonw — using python.exe (window will appear)"
@@ -22,20 +23,20 @@ $settings = New-ScheduledTaskSettingsSet `
     -StartWhenAvailable
 
 Register-ScheduledTask `
-    -TaskName    "MeetingTranscriber-Watcher" `
+    -TaskName    "SimpleVideoTranscriber" `
     -Action      $action `
     -Trigger     $trigger `
     -Settings    $settings `
-    -Description "Auto-transcribe new videos dropped into the inbox folder" `
+    -Description "Watch the OBS recording folder and auto-transcribe new videos" `
     -Force | Out-Null
 
 Write-Host ""
-Write-Host "Task registered: MeetingTranscriber-Watcher"
+Write-Host "Task registered: SimpleVideoTranscriber"
 Write-Host "The watcher will start automatically on next login."
 Write-Host ""
 Write-Host "Useful commands:"
-Write-Host "  Start now:   Start-ScheduledTask  -TaskName MeetingTranscriber-Watcher"
-Write-Host "  Stop:        Stop-ScheduledTask   -TaskName MeetingTranscriber-Watcher"
-Write-Host "  Disable:     Disable-ScheduledTask -TaskName MeetingTranscriber-Watcher"
-Write-Host "  Uninstall:   Unregister-ScheduledTask -TaskName MeetingTranscriber-Watcher"
-Write-Host "  View log:    Get-Content watch.log -Tail 30"
+Write-Host "  Start now:   Start-ScheduledTask  -TaskName SimpleVideoTranscriber"
+Write-Host "  Stop:        Stop-ScheduledTask   -TaskName SimpleVideoTranscriber"
+Write-Host "  Disable:     Disable-ScheduledTask -TaskName SimpleVideoTranscriber"
+Write-Host "  Uninstall:   Unregister-ScheduledTask -TaskName SimpleVideoTranscriber"
+Write-Host "  View log:    Get-Content `"$env:LOCALAPPDATA\SimpleVideoTranscriber\logs\app.log`" -Tail 30"
