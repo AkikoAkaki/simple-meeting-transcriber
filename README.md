@@ -33,7 +33,7 @@ Output formats: **Markdown** (`.md`), **SRT subtitles** (`.srt`), or **plain tex
 - **Flexible pipeline** — run full pipeline, transcription only, or re-diarize existing output
 - **Offline** — all models run locally; no API key, no cloud service
 - **GPU-accelerated** — uses CUDA if available, falls back to CPU automatically
-- **Auto-watcher** — drop files into `inbox/` and transcriptions run unattended
+- **Background watcher** — a tray service starts at login and watches `I:\视频档案`
 - **Cross-platform** — Windows and macOS, with one-click install scripts
 
 ---
@@ -58,8 +58,8 @@ Output formats: **Markdown** (`.md`), **SRT subtitles** (`.srt`), or **plain tex
 
 ## Quick start
 
-1. On first launch, an onboarding panel guides you through getting a free [HuggingFace token](https://huggingface.co/settings/tokens) — takes about 2 minutes, one time only
-2. Drag a file onto the drop zone (or click **Browse…**)
+1. On first launch, the app stays in the system tray. Open the dashboard and save a HuggingFace token once (optional).
+2. Drag a file onto the dashboard (or click **Browse file**).
 3. Choose your output format and pipeline mode
 4. Click **Transcribe**
 5. Click **Open transcript →** when done
@@ -99,6 +99,10 @@ You need a HuggingFace token with the pyannote model licenses accepted. The onbo
 **Can I re-run just the diarization without re-transcribing?**
 Yes — select **Re-diarize only** in the Pipeline dropdown. Whisper output is cached and reused.
 
+**Can I replace SPEAKER_00 with a real name?**
+Yes — select a completed task in Recent tasks and click **Rename speakers**. This only regenerates the output file; it does not run the models again.
+Names are remembered for that exact audio/result cache and reused when you regenerate another output format; the app does not guess identities across different meetings.
+
 ---
 
 ## Requirements
@@ -120,10 +124,10 @@ python transcribe.py path/to/meeting.mp4
 python transcribe.py meeting.mp4 --language zh
 
 # Skip diarization (no token needed)
-python transcribe.py meeting.mp4 --mode transcribe-only
+python transcribe.py meeting.mp4 --transcribe-only
 
 # Re-run diarization on existing cached Whisper output
-python transcribe.py meeting.mp4 --mode diarize-only
+python transcribe.py meeting.mp4 --diarize-only
 
 # Choose output format
 python transcribe.py meeting.mp4 --output-format srt
@@ -131,6 +135,9 @@ python transcribe.py meeting.mp4 --output-format txt
 
 # Override model, device, speaker count, or output location
 python transcribe.py meeting.mp4 --model medium --device cpu --max-speakers 3 --output-dir ./my-transcripts
+
+# Set the exact speaker count when known, and optionally bias names/terms
+python transcribe.py meeting.mp4 --num-speakers 3 --hotwords "Alice,vLLM,KV Cache"
 ```
 
 </details>
@@ -138,14 +145,13 @@ python transcribe.py meeting.mp4 --model medium --device cpu --max-speakers 3 --
 <details>
 <summary>Advanced: Auto-watcher</summary>
 
-The watcher monitors `inbox/` and transcribes new files automatically.
+The tray service monitors `I:\视频档案` and transcribes new files automatically. Existing files are baselined on first start and are not bulk-processed.
 
 ```bash
-python watch.py            # start watching
-python watch.py --dry-run  # detect files but don't transcribe
+python tray_app.py         # start the tray service and dashboard
 ```
 
-Files are transcribed once their size has been stable for 10 seconds (configurable). After a successful transcription, videos can optionally be moved into a `YYYY/` subfolder (see `ORGANIZE_BY_YEAR` in `config.py`).
+Files are transcribed once their size has been stable for about 15 seconds. Source recordings are not moved or renamed by the background service.
 
 </details>
 
@@ -156,15 +162,15 @@ Edit `config.py` to change defaults:
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| `WATCH_DIR` | `inbox/` | Folder the watcher monitors |
+| `WATCH_DIR` | `I:\视频档案` | Folder the watcher monitors |
 | `TRANSCRIPT_DIR` | `transcripts/` | Output folder |
 | `CACHE_DIR` | `cache/` | Intermediate files — safe to delete any time |
 | `WHISPER_MODEL` | `large-v3` | Model size: `tiny` / `base` / `small` / `medium` / `large-v3` |
 | `LANGUAGE` | `None` | `"en"` / `"zh"` / `"ja"` / … — `None` = auto-detect |
 | `DEVICE` | `"auto"` | `"cuda"` / `"cpu"` / `"auto"` |
 | `MAX_SPEAKERS` | `None` | Set an integer if you know the speaker count |
-| `ORGANIZE_BY_YEAR` | `True` | Move processed videos into `YYYY/` subfolders |
-| `STABLE_SECONDS` | `10` | Seconds a file must be unchanged before transcription starts |
+| `NUM_SPEAKERS` | `None` | Exact speaker count when known; takes precedence over `MAX_SPEAKERS` |
+| `HOTWORDS` | `""` | Optional comma-separated names and technical terms |
 | `MIN_FILE_SIZE_KB` | `100` | Ignore files smaller than this |
 | `WATCH_EXTENSIONS` | `{".mp4", …}` | File types the watcher picks up |
 

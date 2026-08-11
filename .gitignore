@@ -1,6 +1,5 @@
-# Videos and audio (large binaries — don't commit)
-inbox/**
-!inbox/.gitkeep
+# Videos and audio (large binaries - don't commit)
+# (Transcripts and cache are ignored below)
 
 # Generated output
 transcripts/**
@@ -14,14 +13,10 @@ cache/**
 hf_token.txt*
 .env
 
-# User-local settings (output dir preference, etc.)
-user_settings.json
-
-# Logs
-watch.log
-
 # Python
 __pycache__/
+.pytest_cache/
+.pytest-tmp-*/
 *.pyc
 *.pyo
 *.egg-info/
