@@ -1,42 +1,64 @@
 # simple-video-transcriber — setup_autostart.ps1
-# Registers the tray controller as a Windows Task Scheduler task that starts at login.
+# Registers the tray controller in Windows Startup (HKCU Run registry key).
 # Run once with: powershell -ExecutionPolicy Bypass -File setup_autostart.ps1
+
+param(
+    [switch]$Uninstall,
+    [switch]$StartNow
+)
 
 $ErrorActionPreference = "Stop"
 
+$regPath = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run"
+$regName = "SimpleVideoTranscriber"
+
+# 1. Always unregister any legacy Scheduled Task if present
+try {
+    $existingTask = Get-ScheduledTask -TaskName $regName -ErrorAction SilentlyContinue
+    if ($existingTask) {
+        Unregister-ScheduledTask -TaskName $regName -Confirm:$false -ErrorAction SilentlyContinue
+        Write-Host "[OK] Cleaned up legacy Windows Scheduled Task '$regName'."
+    }
+} catch {}
+
+if ($Uninstall) {
+    Remove-ItemProperty -Path $regPath -Name $regName -ErrorAction SilentlyContinue
+    Write-Host "[OK] Autostart registry entry removed. SimpleVideoTranscriber will not start at login."
+    exit 0
+}
+
+# 2. Locate pythonw
 $venvPython = Join-Path $PSScriptRoot ".venv\Scripts\python.exe"
 $pythonExe = if (Test-Path $venvPython) { $venvPython } else { python -c "import sys; print(sys.executable)" }
 $pythonw   = $pythonExe -replace "python\.exe$", "pythonw.exe"
 $script    = Join-Path $PSScriptRoot "tray_app.py"
 
 if (-not (Test-Path $pythonw)) {
-    Write-Warning "pythonw.exe not found at $pythonw — using python.exe (window will appear)"
+    Write-Warning "pythonw.exe not found at $pythonw — using python.exe"
     $pythonw = $pythonExe
 }
 
-$action   = New-ScheduledTaskAction -Execute $pythonw -Argument "`"$script`""
-$trigger  = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
-$settings = New-ScheduledTaskSettingsSet `
-    -ExecutionTimeLimit 0 `
-    -RestartCount 3 `
-    -RestartInterval (New-TimeSpan -Minutes 2) `
-    -StartWhenAvailable
-
-Register-ScheduledTask `
-    -TaskName    "SimpleVideoTranscriber" `
-    -Action      $action `
-    -Trigger     $trigger `
-    -Settings    $settings `
-    -Description "Watch the OBS recording folder and auto-transcribe new videos" `
-    -Force | Out-Null
+# 3. Register in HKCU Run key
+$cmd = "`"$pythonw`" `"$script`""
+Set-ItemProperty -Path $regPath -Name $regName -Value $cmd
 
 Write-Host ""
-Write-Host "Task registered: SimpleVideoTranscriber"
-Write-Host "The watcher will start automatically on next login."
+Write-Host "==================================================="
+Write-Host " Autostart Registered via Windows Run Key (HKCU)"
+Write-Host "==================================================="
+Write-Host "Command: $cmd"
 Write-Host ""
-Write-Host "Useful commands:"
-Write-Host "  Start now:   Start-ScheduledTask  -TaskName SimpleVideoTranscriber"
-Write-Host "  Stop:        Stop-ScheduledTask   -TaskName SimpleVideoTranscriber"
-Write-Host "  Disable:     Disable-ScheduledTask -TaskName SimpleVideoTranscriber"
-Write-Host "  Uninstall:   Unregister-ScheduledTask -TaskName SimpleVideoTranscriber"
-Write-Host "  View log:    Get-Content `"$env:LOCALAPPDATA\SimpleVideoTranscriber\logs\app.log`" -Tail 30"
+Write-Host "[OK] SimpleVideoTranscriber will automatically start when you log in to Windows."
+Write-Host "     (Runs via Explorer desktop session, immune to laptop battery policies)"
+Write-Host ""
+
+if ($StartNow) {
+    Start-Process -FilePath $pythonw -ArgumentList "`"$script`""
+    Write-Host "[OK] Launched SimpleVideoTranscriber in the background."
+} else {
+    Write-Host "To launch right now, run:"
+    Write-Host "  Start-Process `"$pythonw`" -ArgumentList `"`"$script`"`""
+}
+Write-Host "To uninstall autostart, run:"
+Write-Host "  powershell -ExecutionPolicy Bypass -File setup_autostart.ps1 -Uninstall"
+Write-Host ""

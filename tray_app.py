@@ -38,17 +38,24 @@ if QT_AVAILABLE:
 
 
     def _make_icon(color: str = "#3b82f6") -> QIcon:
-        pixmap = QPixmap(32, 32)
-        pixmap.fill(Qt.GlobalColor.transparent)
-        painter = QPainter(pixmap)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        painter.setBrush(QColor(color))
-        painter.setPen(Qt.PenStyle.NoPen)
-        painter.drawEllipse(3, 3, 26, 26)
-        painter.setBrush(QColor("#ffffff"))
-        painter.drawEllipse(11, 11, 10, 10)
-        painter.end()
-        return QIcon(pixmap)
+        icon = QIcon()
+        for s in (32, 64, 128):
+            pixmap = QPixmap(s, s)
+            pixmap.fill(Qt.GlobalColor.transparent)
+            painter = QPainter(pixmap)
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+            painter.setBrush(QColor(color))
+            painter.setPen(Qt.PenStyle.NoPen)
+            outer_margin = round(s * (3 / 32))
+            outer_size = s - 2 * outer_margin
+            painter.drawEllipse(outer_margin, outer_margin, outer_size, outer_size)
+            painter.setBrush(QColor("#ffffff"))
+            inner_margin = round(s * (11 / 32))
+            inner_size = s - 2 * inner_margin
+            painter.drawEllipse(inner_margin, inner_margin, inner_size, inner_size)
+            painter.end()
+            icon.addPixmap(pixmap)
+        return icon
 
 
     def _card(title: str) -> tuple[QGroupBox, QVBoxLayout]:
@@ -192,6 +199,11 @@ if QT_AVAILABLE:
             self.progress.setValue(0)
             self.progress.setTextVisible(True)
             current_layout.addWidget(self.progress)
+            self.preview_label = QLabel("")
+            self.preview_label.setObjectName("previewLabel")
+            self.preview_label.setWordWrap(True)
+            self.preview_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+            current_layout.addWidget(self.preview_label)
             current_row = QHBoxLayout()
             self.elapsed = QLabel("")
             self.elapsed.setObjectName("muted")
@@ -228,7 +240,7 @@ if QT_AVAILABLE:
             settings, settings_layout = _card("Advanced settings")
             form = QFormLayout()
             self.model_box = QComboBox()
-            self.model_box.addItems(["large-v3", "medium", "small", "base", "tiny"])
+            self.model_box.addItems(["large-v3-turbo", "large-v3", "medium", "small", "base", "tiny"])
             self.model_box.setCurrentText(self.app.service.settings.model)
             self.device_box = QComboBox()
             self.device_box.addItems(["auto", "cuda", "cpu"])
@@ -252,6 +264,20 @@ if QT_AVAILABLE:
             save_settings = QPushButton("Save model/device settings")
             save_settings.clicked.connect(self._save_settings)
             settings_layout.addWidget(save_settings)
+
+            cache_row = QHBoxLayout()
+            self.cache_size_label = QLabel()
+            self.cache_size_label.setObjectName("muted")
+            self.cache_label = self.cache_size_label
+            cache_row.addWidget(self.cache_size_label)
+            cache_row.addStretch()
+            self.clear_cache_btn = QPushButton("Clear Audio Cache")
+            self.clear_cache_btn.setObjectName("clearCacheButton")
+            self.clear_cache_btn.clicked.connect(self._clear_audio_cache)
+            self.clear_cache_button = self.clear_cache_btn
+            cache_row.addWidget(self.clear_cache_btn)
+            settings_layout.addLayout(cache_row)
+
             body_layout.addWidget(settings)
 
             logs, logs_layout = _card("Readable activity log")
@@ -386,6 +412,44 @@ if QT_AVAILABLE:
                 self.append_log("Speaker names updated")
                 self.refresh()
 
+        def _get_cache_size_text(self) -> str:
+            if hasattr(self.app.service, "get_cache_size"):
+                try:
+                    return self.app.service.get_cache_size()
+                except Exception:
+                    pass
+            from paths import get_cache_size
+            try:
+                return get_cache_size()
+            except Exception:
+                return "0 B"
+
+        def _update_cache_display(self):
+            size_str = self._get_cache_size_text()
+            self.cache_size_label.setText(f"Cache usage: {size_str}")
+
+        def _clear_audio_cache(self):
+            reply = QMessageBox.question(
+                self,
+                "Clear Audio Cache",
+                "Are you sure you want to clear temporary audio cache files?\n\n"
+                "This will only remove completed/failed .wav files.\n"
+                "JSON caches and transcripts will not be affected.",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if reply != QMessageBox.StandardButton.Yes:
+                return
+            if hasattr(self.app.service, "clear_audio_cache"):
+                result = self.app.service.clear_audio_cache()
+            else:
+                from service import clear_audio_cache
+                result = clear_audio_cache()
+            count = result.get("deleted_count", 0)
+            size = result.get("reclaimed_size", "0 B")
+            self.append_log(f"Audio cache cleared: {count} file(s) removed ({size} reclaimed)")
+            self._update_cache_display()
+
         def closeEvent(self, event):
             event.ignore()
             self.hide()
@@ -422,6 +486,9 @@ if QT_AVAILABLE:
                 started = row.get("started_at") or row.get("updated_at")
                 self.elapsed.setText(f"Started {started.replace('T', ' ')[:19]}")
                 self.cancel_button.setVisible(True)
+                preview = active.get("preview")
+                if preview:
+                    self.preview_label.setText(preview)
             else:
                 self.current_name.setText("No active task")
                 self.current_stage.setText("The worker is idle.")
@@ -429,6 +496,8 @@ if QT_AVAILABLE:
                 self.progress.setValue(0)
                 self.elapsed.setText("")
                 self.cancel_button.setVisible(False)
+                self.preview_label.setText("")
+            self._update_cache_display()
             if update_recent:
                 self.refresh_recent_list()
             watcher = "Watching" if settings.watcher_enabled else "Paused"
@@ -472,6 +541,7 @@ if QT_AVAILABLE:
                 QLabel#subtitle, QLabel#muted { color: #6b7280; }
                 QLabel#statusPill { background: #eaf2ff; color: #2563eb; border-radius: 10px; padding: 6px 10px; font-weight: 600; }
                 QLabel#currentName { font-size: 15px; font-weight: 600; color: #111827; }
+                QLabel#previewLabel { color: #4b5563; font-style: italic; min-height: 18px; margin-top: 2px; }
                 QLabel#dropHint, QLabel#pathLabel { color: #4b5563; }
                 QGroupBox { background: #ffffff; border: 1px solid #e5e7eb; border-radius: 12px; margin-top: 8px; padding-top: 12px; font-weight: 600; }
                 QGroupBox::title { subcontrol-origin: margin; left: 14px; padding: 0 5px; color: #374151; }
@@ -490,7 +560,7 @@ if QT_AVAILABLE:
             )
             self.bridge = Bridge()
             self.lock = QLockFile(str(APP_DATA_DIR / "app.lock"))
-            self.lock.setStaleLockTime(0)
+            self.lock.setStaleLockTime(30000)
             self.service = BackgroundService(on_event=self._from_service)
             self.tray = QSystemTrayIcon(_make_icon(), qt_app)
             self.tray.setToolTip("Simple Video Transcriber · starting")
@@ -571,6 +641,12 @@ if QT_AVAILABLE:
             elif event == "watch_stopped":
                 self.dashboard.status_label.setText("● Paused")
                 self._update_tooltip()
+            if event == "progress":
+                preview = payload.get("preview")
+                if preview:
+                    self.dashboard.preview_label.setText(preview)
+            elif event in {"completed", "completed_with_warning", "failed", "cancelled", "started", "queued"}:
+                self.dashboard.preview_label.setText("")
             if event == "log":
                 self.dashboard.append_log(message)
             elif event not in {"progress", "heartbeat"}:

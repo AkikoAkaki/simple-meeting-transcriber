@@ -23,8 +23,9 @@ CACHE_DIR = ROOT_DIR / "cache"
 # Model size vs. quality trade-off:
 #   tiny / base / small  → fast, weaker accuracy
 #   medium               → good balance for English
-#   large-v2 / large-v3  → best quality, needs ~6 GB VRAM (recommended)
-WHISPER_MODEL = "large-v3"
+#   large-v3-turbo       → fast, high accuracy (~1.6 GB, recommended)
+#   large-v2 / large-v3  → best quality, needs ~6 GB VRAM
+WHISPER_MODEL = "large-v3-turbo"
 
 # Transcription language:
 #   None  → auto-detect (recommended for mixed-language audio)

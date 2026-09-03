@@ -458,7 +458,7 @@ def run_whisper(wav_path: Path, whisper_json: Path, language: str | None,
     compute_type = "float16" if device == "cuda" else "int8"
     lang_display = language or "auto-detect"
     MODEL_SIZES = {"tiny": "~75 MB", "base": "~145 MB", "small": "~466 MB",
-                   "medium": "~1.5 GB", "large-v3": "~3.1 GB"}
+                   "medium": "~1.5 GB", "large-v3": "~3.1 GB", "large-v3-turbo": "~1.6 GB"}
     size_hint = MODEL_SIZES.get(config.WHISPER_MODEL, "")
     print(f"[2/4] Loading Whisper {config.WHISPER_MODEL} on {device} ({compute_type})...", flush=True)
     _emit_event("stage", stage="loading_whisper", progress=0.0,
@@ -526,11 +526,13 @@ def run_whisper(wav_path: Path, whisper_json: Path, language: str | None,
         if duration and duration > 0:
             progress = min(max(float(s.end) / float(duration), 0.0), 0.99)
         now = time.monotonic()
+        preview_text = s.text.strip()
         if (progress is not None and
-                (progress >= 1.0 or progress - last_progress >= 0.01)) or now - last_progress_emit >= 1.0:
+                (progress >= 1.0 or progress - last_progress >= 0.01)) or now - last_progress_emit >= 1.0 or last_progress < 0:
             _emit_event("progress", stage="transcribing", progress=progress,
                         segments=len(segments), audio_position_sec=round(float(s.end), 2),
-                        message=f"Transcribed through {format_time(s.end)}")
+                        message=f"Transcribed through {format_time(s.end)}",
+                        preview=preview_text)
             last_progress = progress if progress is not None else last_progress
             last_progress_emit = now
         if len(segments) % 20 == 0:
@@ -1327,7 +1329,7 @@ def _main():
     parser.add_argument("--diarize-only", action="store_true",
                         help="Re-run diarization using cached Whisper result")
     parser.add_argument("--model", default=None,
-                        help="Whisper model size (tiny/base/small/medium/large-v3). Overrides config.py")
+                        help="Whisper model size (tiny/base/small/medium/large-v3-turbo/large-v3). Overrides config.py")
     parser.add_argument("--device", default=None,
                         help="Compute device (auto/cuda/cpu). Overrides config.py")
     parser.add_argument("--max-speakers", default=None, type=int,

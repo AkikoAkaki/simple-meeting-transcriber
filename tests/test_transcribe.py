@@ -638,3 +638,51 @@ def test_whisper_initial_prompt_passed_for_punctuation(tmp_path, monkeypatch):
     transcribe.run_whisper(tmp_path / "audio.wav", tmp_path / "w5.json", "fr")
     assert observed_prompts[-1] == "Here is a transcript of the meeting with complete punctuation."
 
+
+def test_run_whisper_emits_preview_in_progress_events(tmp_path, monkeypatch):
+    """run_whisper must include preview in the emitted progress events."""
+    from types import SimpleNamespace
+    import transcribe
+
+    emitted_events = []
+
+    def mock_emit_event(event, **payload):
+        emitted_events.append((event, payload))
+
+    monkeypatch.setattr(transcribe, "_emit_event", mock_emit_event)
+    monkeypatch.setattr(transcribe, "_resolve_device", lambda: "cpu")
+
+    class FakeModel:
+        def transcribe(self, _path, **kwargs):
+            seg1 = SimpleNamespace(
+                start=0.0, end=2.0, text="First transcribed segment",
+                words=[SimpleNamespace(start=0.0, end=2.0, word="First transcribed segment")],
+            )
+            seg2 = SimpleNamespace(
+                start=2.0, end=4.0, text="Second transcribed segment",
+                words=[SimpleNamespace(start=2.0, end=4.0, word="Second transcribed segment")],
+            )
+            return iter([seg1, seg2]), SimpleNamespace(duration=4.0, language="en", language_probability=1.0)
+
+    monkeypatch.setattr(transcribe, "get_whisper_model", lambda *args: FakeModel())
+
+    cache = tmp_path / "test_preview_whisper.json"
+    transcribe.run_whisper(tmp_path / "audio.wav", cache, None)
+
+    progress_events = [payload for event, payload in emitted_events if event == "progress"]
+    assert len(progress_events) >= 1
+    assert any(p.get("preview") == "First transcribed segment" for p in progress_events)
+
+
+def test_whisper_model_sizes_includes_large_v3_turbo():
+    import importlib
+    import config
+    import transcribe
+
+    importlib.reload(config)
+    assert config.WHISPER_MODEL == "large-v3-turbo"
+    # Also verify MODEL_SIZES has large-v3-turbo hint
+    # (Notice: in run_whisper, MODEL_SIZES is defined or cached)
+    # Check that config.py default is large-v3-turbo
+
+

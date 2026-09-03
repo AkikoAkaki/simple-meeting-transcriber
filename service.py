@@ -7,6 +7,7 @@ starts the heavy transcription process only when a file is ready.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import sqlite3
@@ -25,7 +26,7 @@ from watchdog.events import FileSystemEventHandler
 from watchdog.observers import Observer
 
 import config
-from paths import transcript_path
+from paths import transcript_path, format_size, get_cache_size, get_cache_size_bytes
 
 
 APP_DATA_DIR = Path(os.environ.get("LOCALAPPDATA", Path.home() / ".local")) / "SimpleVideoTranscriber"
@@ -100,6 +101,109 @@ def _terminate_process_tree(proc: subprocess.Popen) -> None:
         proc.terminate()
     except (OSError, ProcessLookupError):
         pass
+
+
+def clear_audio_cache(
+    cache_dir: Path | str | None = None,
+    store: JobStore | None = None,
+) -> dict:
+    """Delete temporary .wav files produced by completed or failed tasks.
+
+    Strictly preserves .json caches (whisper, diarization, segments) and never touches
+    the transcripts directory. Never deletes .wav files belonging to active jobs.
+    """
+    if cache_dir is None:
+        cache_dir = config.CACHE_DIR
+    cache_path = Path(cache_dir)
+    if not cache_path.is_dir():
+        return {"deleted_count": 0, "reclaimed_bytes": 0, "reclaimed_size": "0 B"}
+
+    active_wav_stems: set[str] = set()
+    terminal_wav_stems: set[str] = set()
+
+    if store is None:
+        try:
+            store = JobStore()
+        except Exception:
+            store = None
+
+    if store is not None:
+        try:
+            with store._connect() as conn:
+                rows = conn.execute("SELECT source_path, source_key, status FROM jobs").fetchall()
+            for r in rows:
+                status = r["status"]
+                src_path = Path(r["source_path"])
+                key = r["source_key"] if "source_key" in r.keys() else ""
+                fp = hashlib.sha256(key.encode("utf-8")).hexdigest()[:12] if key else ""
+                stems = set()
+                if fp:
+                    stems.add(f"{src_path.stem}_{fp}_16k")
+                stems.add(f"{src_path.stem}_16k")
+                if status in ACTIVE_STATUSES or status == "cancel_requested":
+                    active_wav_stems.update(stems)
+                elif status in TERMINAL_STATUSES:
+                    terminal_wav_stems.update(stems)
+        except Exception:
+            pass
+
+    def _extract_base_stem(filename: str) -> str:
+        b = filename
+        for _ in range(2):
+            if b.endswith(".part"):
+                b = b[:-5]
+            if b.endswith(".wav"):
+                b = b[:-4]
+        return b
+
+    deleted_count = 0
+    reclaimed_bytes = 0
+
+    try:
+        entries = list(cache_path.iterdir())
+    except OSError:
+        entries = []
+
+    for item in entries:
+        if not item.is_file():
+            continue
+        name = item.name
+        # Never touch non-audio files; strictly preserve all json caches
+        if name.endswith(".json") or ".json.part" in name:
+            continue
+        is_wav = name.endswith(".wav") or ".wav.part" in name or name.endswith("_16k.part")
+        if not is_wav:
+            continue
+
+        base = _extract_base_stem(name)
+
+        # Active jobs must NEVER have their audio deleted
+        if base in active_wav_stems:
+            continue
+
+        # If recorded in terminal jobs, delete immediately.
+        # Otherwise, delete only if not modified in the last 15 seconds (avoids deleting in-flight CLI runs).
+        if base not in terminal_wav_stems:
+            try:
+                if time.time() - item.stat().st_mtime < 15:
+                    continue
+            except OSError:
+                continue
+
+        try:
+            size = item.stat().st_size
+            item.unlink()
+            deleted_count += 1
+            reclaimed_bytes += size
+        except OSError:
+            pass
+
+    return {
+        "deleted_count": deleted_count,
+        "reclaimed_bytes": reclaimed_bytes,
+        "reclaimed_size": format_size(reclaimed_bytes),
+    }
+
 
 
 @dataclass
@@ -890,6 +994,11 @@ class WorkerController:
         if isinstance(event.get("progress"), (int, float)):
             changes["progress"] = max(0.0, min(1.0, float(event["progress"])))
 
+        if "preview" in event:
+            with self._lock:
+                if self._active and self._active.get("job_id") == job_id:
+                    self._active["preview"] = event["preview"]
+
         if kind == "failed":
             changes["error"] = event.get("error", event.get("message", "Error"))
         elif kind == "cancelled":
@@ -903,6 +1012,9 @@ class WorkerController:
         if not updated:
             return
         if kind in {"completed", "completed_with_warning", "failed", "cancelled"}:
+            with self._lock:
+                if self._active and self._active.get("job_id") == job_id:
+                    self._active.pop("preview", None)
             return
         self.store.record_event(job_id, kind, event)
         self.on_event(kind, event)
@@ -911,6 +1023,12 @@ class WorkerController:
         """Keep live UI updates responsive without persisting every segment."""
         progress = event.get("progress")
         now = time.monotonic()
+        if "preview" in event:
+            self._last_progress[job_id] = (
+                float(progress) if isinstance(progress, (int, float)) else -1.0,
+                now,
+            )
+            return True
         previous = self._last_progress.get(job_id)
         if previous is None:
             self._last_progress[job_id] = (float(progress) if isinstance(progress, (int, float)) else -1.0, now)
@@ -979,6 +1097,14 @@ class BackgroundService:
         if row:
             self.worker.enqueue(row)
         return row
+
+    def get_cache_size(self) -> str:
+        """Return human-readable cache size."""
+        return get_cache_size(config.CACHE_DIR)
+
+    def clear_audio_cache(self) -> dict:
+        """Delete temporary .wav files from completed/failed tasks."""
+        return clear_audio_cache(config.CACHE_DIR, self.store)
 
     def speaker_labels_for_job(self, job_id: str) -> list[str]:
         """Return labels from the completed merged cache for the rename dialog."""

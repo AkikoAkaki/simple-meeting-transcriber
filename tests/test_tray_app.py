@@ -148,3 +148,88 @@ def test_handle_event_skips_recent_refresh_on_progress_and_heartbeat(qapp, monke
         assert refresh_args[-1] is True, "failed events must refresh recent_list"
     finally:
         controller.service.stop()
+
+
+def test_make_icon_generates_multi_resolution_antialiased_qicon(qapp):
+    icon = tray_app._make_icon("#3b82f6")
+    sizes = [(sz.width(), sz.height()) for sz in icon.availableSizes()]
+    assert (32, 32) in sizes
+    assert (64, 64) in sizes
+    assert (128, 128) in sizes
+
+
+def test_model_box_contains_large_v3_turbo_as_recommended(qapp):
+    app = _mock_app_and_service()
+    dashboard = tray_app.Dashboard(app)
+    items = [dashboard.model_box.itemText(i) for i in range(dashboard.model_box.count())]
+    assert "large-v3-turbo" in items
+    assert items[0] == "large-v3-turbo"
+    for expected in ["large-v3", "medium", "small", "base", "tiny"]:
+        assert expected in items
+
+
+def test_dashboard_has_preview_label_and_cache_controls(qapp):
+    app = _mock_app_and_service()
+    dashboard = tray_app.Dashboard(app)
+
+    assert hasattr(dashboard, "preview_label")
+    assert dashboard.preview_label.text() == ""
+
+    assert hasattr(dashboard, "clear_cache_btn")
+    assert dashboard.clear_cache_btn.text() == "Clear Audio Cache"
+    assert hasattr(dashboard, "clear_cache_button")
+
+    assert hasattr(dashboard, "cache_size_label")
+    assert hasattr(dashboard, "cache_label")
+    assert "Cache" in dashboard.cache_size_label.text()
+
+
+def test_preview_label_updates_on_progress_and_clears_on_completion_or_idle(qapp):
+    controller = tray_app.TrayApp(qapp)
+    try:
+        controller.dashboard = tray_app.Dashboard(controller)
+        assert controller.dashboard.preview_label.text() == ""
+
+        # Progress with preview text
+        controller._handle_event("progress", {"progress": 0.3, "preview": "Live transcript text"})
+        assert controller.dashboard.preview_label.text() == "Live transcript text"
+
+        # Subsequent progress updates preview
+        controller._handle_event("progress", {"progress": 0.6, "preview": "Second phrase"})
+        assert controller.dashboard.preview_label.text() == "Second phrase"
+
+        # Completed clears preview
+        controller._handle_event("completed", {"message": "Done"})
+        assert controller.dashboard.preview_label.text() == ""
+
+        # Another progress then failed clears preview
+        controller._handle_event("progress", {"progress": 0.1, "preview": "Failing segment"})
+        assert controller.dashboard.preview_label.text() == "Failing segment"
+        controller._handle_event("failed", {"message": "Error"})
+        assert controller.dashboard.preview_label.text() == ""
+    finally:
+        controller.service.stop()
+
+
+def test_clear_audio_cache_dialog_confirm_and_cancel(qapp, monkeypatch):
+    from PySide6.QtWidgets import QMessageBox
+
+    app = _mock_app_and_service()
+    clear_mock = MagicMock(return_value={"deleted_count": 3, "reclaimed_bytes": 3145728, "reclaimed_size": "3.0 MB"})
+    app.service.clear_audio_cache = clear_mock
+    app.service.get_cache_size = MagicMock(return_value="0 B")
+
+    dashboard = tray_app.Dashboard(app)
+
+    # 1. User cancels confirmation -> should NOT clear
+    monkeypatch.setattr(QMessageBox, "question", lambda *a, **kw: QMessageBox.StandardButton.No)
+    dashboard._clear_audio_cache()
+    clear_mock.assert_not_called()
+
+    # 2. User confirms -> should call clear_audio_cache and append log
+    monkeypatch.setattr(QMessageBox, "question", lambda *a, **kw: QMessageBox.StandardButton.Yes)
+    dashboard._clear_audio_cache()
+    clear_mock.assert_called_once()
+    assert "3 file(s) removed (3.0 MB reclaimed)" in dashboard.log.toPlainText()
+    assert "0 B" in dashboard.cache_size_label.text()
+

@@ -164,7 +164,7 @@ Edit `config.py` to change defaults:
 | `WATCH_DIR` | `I:\视频档案` | Folder the watcher monitors |
 | `TRANSCRIPT_DIR` | `transcripts/` | Output folder |
 | `CACHE_DIR` | `cache/` | Intermediate files — safe to delete any time |
-| `WHISPER_MODEL` | `large-v3` | Model size: `tiny` / `base` / `small` / `medium` / `large-v3` |
+| `WHISPER_MODEL` | `large-v3-turbo` | Model size: `tiny` / `base` / `small` / `medium` / `large-v3-turbo` / `large-v3` |
 | `LANGUAGE` | `None` | `"en"` / `"zh"` / `"ja"` / … — `None` = auto-detect |
 | `DEVICE` | `"auto"` | `"cuda"` / `"cpu"` / `"auto"` |
 | `MAX_SPEAKERS` | `None` | Set an integer if you know the speaker count |

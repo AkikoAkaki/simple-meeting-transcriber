@@ -164,7 +164,7 @@ python tray_app.py         # 启动后台托盘服务和 dashboard
 | `WATCH_DIR` | `I:\视频档案` | 监听目录；也可在 dashboard 中修改 |
 | `TRANSCRIPT_DIR` | `transcripts/` | 输出目录 |
 | `CACHE_DIR` | `cache/` | 中间文件缓存，随时可删 |
-| `WHISPER_MODEL` | `large-v3` | 模型大小：`tiny` / `base` / `small` / `medium` / `large-v3` |
+| `WHISPER_MODEL` | `large-v3-turbo` | 模型大小：`tiny` / `base` / `small` / `medium` / `large-v3-turbo` / `large-v3` |
 | `LANGUAGE` | `None` | `"zh"` / `"en"` / `"ja"` / … — `None` = 自动检测 |
 | `DEVICE` | `"auto"` | `"cuda"` / `"cpu"` / `"auto"` |
 | `MAX_SPEAKERS` | `None` | 已知说话人数量时填整数，提高准确率 |

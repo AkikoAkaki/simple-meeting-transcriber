@@ -1194,3 +1194,205 @@ def test_watch_extensions_includes_ts_flac_aac_opus():
     for ext in [".ts", ".flac", ".aac", ".opus"]:
         assert ext in config.WATCH_EXTENSIONS
 
+
+def test_format_size_and_get_cache_size(tmp_path):
+    from paths import format_size, get_cache_size, get_cache_size_bytes
+    assert format_size(0) == "0 B"
+    assert format_size(500) == "500 B"
+    assert format_size(1024) == "1.0 KB"
+    assert format_size(1024 * 1024 * 128.5) == "128.5 MB"
+
+    cache_dir = tmp_path / "cache"
+    assert get_cache_size_bytes(cache_dir) == 0
+    assert get_cache_size(cache_dir) == "0 B"
+
+    cache_dir.mkdir()
+    (cache_dir / "file1.wav").write_bytes(b"x" * 1024)
+    (cache_dir / "file2.json").write_bytes(b"y" * 2048)
+    assert get_cache_size_bytes(cache_dir) == 3072
+    assert get_cache_size(cache_dir) == "3.0 KB"
+
+
+def test_clear_audio_cache_deletes_only_terminal_wavs_and_preserves_json_and_active(tmp_path):
+    import hashlib
+    from service import JobStore, clear_audio_cache
+
+    cache_dir = tmp_path / "cache"
+    cache_dir.mkdir()
+    transcripts_dir = tmp_path / "transcripts"
+    transcripts_dir.mkdir()
+    (transcripts_dir / "meeting.md").write_text("# Meeting transcript", encoding="utf-8")
+
+    db_path = tmp_path / "jobs.sqlite3"
+    store = JobStore(db_path)
+
+    # Completed job
+    completed_src = tmp_path / "completed_video.mp4"
+    completed_src.write_bytes(b"video1")
+    job_completed = store.create_if_new(completed_src)
+    store.update(job_completed["job_id"], status="completed")
+
+    # Failed job
+    failed_src = tmp_path / "failed_video.mp4"
+    failed_src.write_bytes(b"video2")
+    job_failed = store.create_if_new(failed_src)
+    store.update(job_failed["job_id"], status="failed")
+
+    # Running job
+    running_src = tmp_path / "running_video.mp4"
+    running_src.write_bytes(b"video3")
+    job_running = store.create_if_new(running_src)
+    store.update(job_running["job_id"], status="running")
+
+    def get_fp(key):
+        return hashlib.sha256(key.encode("utf-8")).hexdigest()[:12]
+
+    fp_comp = get_fp(job_completed["source_key"])
+    fp_fail = get_fp(job_failed["source_key"])
+    fp_run = get_fp(job_running["source_key"])
+
+    # Create wav and json files in cache
+    wav_completed = cache_dir / f"{completed_src.stem}_{fp_comp}_16k.wav"
+    wav_completed.write_bytes(b"w" * 5000)
+    json_completed = cache_dir / f"_{completed_src.stem}_{fp_comp}_whisper.json"
+    json_completed.write_text("{}", encoding="utf-8")
+
+    wav_failed = cache_dir / f"{failed_src.stem}_{fp_fail}_16k.wav"
+    wav_failed.write_bytes(b"w" * 3000)
+
+    wav_running = cache_dir / f"{running_src.stem}_{fp_run}_16k.wav"
+    wav_running.write_bytes(b"w" * 4000)
+    json_running = cache_dir / f"_{running_src.stem}_{fp_run}_whisper.json"
+    json_running.write_text("{}", encoding="utf-8")
+
+    # Run cleanup
+    result = clear_audio_cache(cache_dir, store)
+    assert result["deleted_count"] == 2
+    assert result["reclaimed_bytes"] == 8000
+
+    # Verify:
+    # 1. Terminal .wav files deleted
+    assert not wav_completed.exists()
+    assert not wav_failed.exists()
+    # 2. Running .wav preserved
+    assert wav_running.exists()
+    # 3. All .json preserved
+    assert json_completed.exists()
+    assert json_running.exists()
+    # 4. Transcripts untouched
+    assert (transcripts_dir / "meeting.md").exists()
+
+
+def test_service_cache_methods(tmp_path):
+    from service import BackgroundService, AppSettings
+
+    settings = AppSettings(
+        watch_dir=str(tmp_path / "watch"),
+        transcript_dir=str(tmp_path / "transcripts"),
+        watcher_enabled=False,
+    )
+    svc = BackgroundService(settings=settings)
+    try:
+        assert isinstance(svc.get_cache_size(), str)
+        res = svc.clear_audio_cache()
+        assert "deleted_count" in res
+        assert "reclaimed_bytes" in res
+        assert "reclaimed_size" in res
+    finally:
+        svc.stop()
+
+
+def test_preview_field_forwarded_and_not_throttled(tmp_path):
+    from service import parse_worker_line, WorkerController, JobStore, TokenStore, AppSettings
+
+    line = '@@EVENT {"event":"progress","stage":"transcribing","progress":0.25,"preview":"Good morning"}'
+    parsed = parse_worker_line(line)
+    assert parsed["preview"] == "Good morning"
+
+    settings = AppSettings(
+        watch_dir=str(tmp_path / "watch"),
+        transcript_dir=str(tmp_path / "transcripts"),
+    )
+    store = JobStore(tmp_path / "jobs.sqlite3")
+    token_store = TokenStore(tmp_path / "token.txt")
+    events = []
+    controller = WorkerController(settings, store, token_store, lambda e, p: events.append((e, p)))
+    try:
+        evt1 = {"event": "progress", "stage": "transcribing", "progress": 0.1, "preview": "Hello"}
+        evt2 = {"event": "progress", "stage": "transcribing", "progress": 0.1, "preview": "world"}
+        assert controller._should_forward_progress("job-1", evt1) is True
+        assert controller._should_forward_progress("job-1", evt2) is True
+
+        controller._active = {"job_id": "job-1", "source_path": "foo.mp4"}
+        with store._connect() as conn:
+            conn.execute(
+                "INSERT INTO jobs (job_id, source_path, source_key, source_size, source_mtime_ns, status, created_at, updated_at) "
+                "VALUES ('job-1', 'foo.mp4', 'k', 100, 100, 'running', 'now', 'now')"
+            )
+        controller._apply_worker_event("job-1", evt1)
+        assert controller.active["preview"] == "Hello"
+
+        controller._apply_worker_event("job-1", {"event": "completed", "output_path": "out.md"})
+        assert controller.active.get("preview") is None
+        assert "job-1" in controller._last_progress
+        assert controller._last_progress["job-1"][0] == 0.1
+    finally:
+        controller.stop()
+
+
+def test_clear_audio_cache_stem_collision_and_untracked(tmp_path):
+    import os
+    import time
+    from service import JobStore, clear_audio_cache
+
+    cache_dir = tmp_path / "cache"
+    cache_dir.mkdir()
+    store = JobStore(tmp_path / "jobs.sqlite3")
+
+    # Active job with stem "test"
+    active_src = tmp_path / "test.mp4"
+    active_src.write_bytes(b"test_video")
+    active_job = store.create_if_new(active_src)
+    store.update(active_job["job_id"], status="running")
+
+    # Active wav file
+    active_wav = cache_dir / "test_16k.wav"
+    active_wav.write_bytes(b"active" * 100)
+
+    # Completed job whose name ends with "test_16k.wav" (substring collision)
+    collision_wav = cache_dir / "latest_16k.wav"
+    collision_wav.write_bytes(b"collision" * 100)
+
+    # Untracked old wav from CLI run
+    old_cli_wav = cache_dir / "cli_run_16k.wav"
+    old_cli_wav.write_bytes(b"cli" * 100)
+    old_cli_json = cache_dir / "_cli_run_whisper.json"
+    old_cli_json.write_text("{}", encoding="utf-8")
+
+    # Make older files have mtime > 20s in the past so they aren't treated as in-flight
+    past = time.time() - 60
+    os.utime(collision_wav, (past, past))
+    os.utime(old_cli_wav, (past, past))
+
+    result = clear_audio_cache(cache_dir, store)
+    # Active wav is preserved
+    assert active_wav.exists()
+    # Collision file (latest_16k) and untracked old CLI wav are deleted
+    assert not collision_wav.exists()
+    assert not old_cli_wav.exists()
+    # JSON cache is preserved
+    assert old_cli_json.exists()
+    assert result["deleted_count"] == 2
+
+
+def test_format_size_robustness():
+    from paths import format_size
+
+    assert format_size(None) == "0 B"
+    assert format_size(-100) == "0 B"
+    assert format_size("not a number") == "0 B"
+    assert format_size(0) == "0 B"
+    assert format_size(1024 * 1024) == "1.0 MB"
+
+
+
