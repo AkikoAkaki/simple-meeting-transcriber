@@ -249,13 +249,22 @@ def get_whisper_model(model_name: str, device: str, compute_type: str):
     params = (model_name, device, compute_type)
     if _whisper_model is None or _whisper_model_params != params:
         _whisper_model = None
-        import torch
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
+        import gc
+        gc.collect()
         from faster_whisper import WhisperModel
         _whisper_model = WhisperModel(model_name, device=device, compute_type=compute_type)
         _whisper_model_params = params
     return _whisper_model
+
+
+def clear_whisper_model() -> None:
+    global _whisper_model, _whisper_model_params
+    had_model = _whisper_model is not None
+    _whisper_model = None
+    _whisper_model_params = None
+    if had_model:
+        import gc
+        gc.collect()
 
 
 _diarize_pipeline = None
@@ -308,9 +317,20 @@ def clear_diarize_pipeline() -> None:
 
 
 def _resolve_device() -> str:
-    import torch
     if config.DEVICE == "auto":
-        return "cuda" if torch.cuda.is_available() else "cpu"
+        try:
+            import ctranslate2
+            if ctranslate2.get_cuda_device_count() > 0:
+                return "cuda"
+        except Exception:
+            pass
+        try:
+            import torch
+            if torch.cuda.is_available():
+                return "cuda"
+        except Exception:
+            pass
+        return "cpu"
     return config.DEVICE
 
 
@@ -487,9 +507,13 @@ def run_whisper(wav_path: Path, whisper_json: Path, language: str | None,
     print(f"      Done — {len(segments)} segments | detected: {info.language} ({info.language_probability:.0%})", flush=True)
     _emit_event("stage", stage="transcribing", progress=1.0,
                 segments=len(segments), message="Whisper transcription completed")
-    import torch
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
+    clear_whisper_model()
+    try:
+        import torch
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+    except ImportError:
+        pass
     return segments
 
 
@@ -1175,14 +1199,15 @@ def _main():
     import platform
     print(f"Python {sys.version.split()[0]} | {platform.system()} {platform.release()}", flush=True)
     try:
-        import torch
-        if torch.cuda.is_available():
-            cuda_info = f"CUDA {torch.version.cuda} — {torch.cuda.get_device_name(0)}"
+        import ctranslate2
+        cuda_count = ctranslate2.get_cuda_device_count()
+        if cuda_count > 0:
+            cuda_info = f"CUDA (device count: {cuda_count})"
         else:
             cuda_info = "CPU only (no CUDA)"
-        print(f"torch {torch.__version__} | {cuda_info}", flush=True)
-    except ImportError:
-        print("torch not installed", flush=True)
+        print(f"ctranslate2 | {cuda_info}", flush=True)
+    except Exception:
+        pass
 
     language = args.language or config.LANGUAGE
     hotwords = config.HOTWORDS or ""
