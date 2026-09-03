@@ -523,6 +523,35 @@ class FileWatcher:
                 continue
             if now - last_changed < self.settings.stable_seconds:
                 continue
+            try:
+                with open(path, "r+b"):
+                    pass
+            except FileNotFoundError:
+                with self._lock:
+                    self._pending.pop(key, None)
+                continue
+            except (PermissionError, OSError) as exc:
+                winerror = getattr(exc, "winerror", None)
+                is_sharing_violation = (
+                    winerror in {32, 33}
+                    or "being used by another process" in str(exc).lower()
+                    or "sharing violation" in str(exc).lower()
+                )
+                if is_sharing_violation or winerror is None:
+                    # File is still locked/being written (e.g. OBS recording, sharing violation error 32).
+                    # Keep pending and wait for next tick.
+                    with self._lock:
+                        self._pending[key] = (current, now)
+                    continue
+                # If it's a different permission error (e.g. read-only file winerror 5),
+                # verify it can at least be read for transcription.
+                try:
+                    with open(path, "rb"):
+                        pass
+                except OSError:
+                    with self._lock:
+                        self._pending[key] = (current, now)
+                    continue
             with self._lock:
                 self._pending.pop(key, None)
             if current >= self.settings.min_file_size_kb * 1024:
@@ -715,12 +744,8 @@ class WorkerController:
 
         fmt = options.get("output_format")
         fmt_val = "md"
-        if fmt:
-            fmt_lower = fmt.lower()
-            if "srt" in fmt_lower:
-                fmt_val = "srt"
-            elif "txt" in fmt_lower:
-                fmt_val = "txt"
+        if fmt and "txt" in fmt.lower():
+            fmt_val = "txt"
 
         started = self.store.update_if_status(
             job_id, {"queued"}, status="running", stage="starting",

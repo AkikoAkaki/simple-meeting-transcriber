@@ -22,7 +22,7 @@ def source_fingerprint(input_path: Path) -> str:
 
 def transcript_path(input_path: Path, output_dir: Path, output_format: str = "md", fingerprint: str | None = None) -> Path:
     """Return the output path used by both the worker and its controller."""
-    suffix = {"md": ".md", "srt": ".srt", "txt": ".txt"}.get(output_format, ".md")
+    suffix = {"md": ".md", "txt": ".txt"}.get(output_format, ".md")
     input_path = Path(input_path)
     fp = fingerprint or source_fingerprint(input_path)
     return Path(output_dir) / f"{input_path.stem}_{fp}{suffix}"

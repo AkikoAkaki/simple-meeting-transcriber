@@ -64,4 +64,8 @@ HOTWORDS = ""
 MIN_FILE_SIZE_KB = 100
 
 # Supported video/audio extensions the watcher will pick up.
-WATCH_EXTENSIONS = {".mp4", ".m4a", ".mov", ".mkv", ".webm", ".mp3", ".wav"}
+WATCH_EXTENSIONS = {
+    ".mp4", ".m4a", ".mov", ".mkv", ".webm", ".mp3", ".wav",
+    ".ts", ".flac", ".aac", ".opus",
+}
+

@@ -95,6 +95,10 @@ def test_convert_to_wav_publishes_only_complete_output(tmp_path, monkeypatch):
     output = tmp_path / "audio.wav"
 
     def fake_run(command, **kwargs):
+        assert "-nostdin" in command
+        assert "-vn" in command
+        assert "-sn" in command
+        assert "-dn" in command
         partial = Path(command[-1])
         assert partial.name == "audio.part.wav"
         partial.write_bytes(b"w" * 2048)
@@ -105,37 +109,6 @@ def test_convert_to_wav_publishes_only_complete_output(tmp_path, monkeypatch):
     transcribe.convert_to_wav(source, output)
     assert output.stat().st_size == 2048
     assert not (tmp_path / "audio.part.wav").exists()
-
-
-def test_generate_srt_basic():
-    """generate_srt produces valid SRT with correct block structure."""
-    import transcribe
-    segments = [
-        {"start": 0.0, "end": 3.5, "text": "Hello world", "speaker": "SPEAKER_A"},
-        {"start": 4.1, "end": 7.0, "text": "How are you?", "speaker": "SPEAKER_B"},
-    ]
-    srt = transcribe.generate_srt(segments)
-    lines = srt.strip().split("\n")
-    assert lines[0] == "1"
-    assert lines[1] == "00:00:00,000 --> 00:00:03,500"
-    assert lines[2] == "Hello world"
-    assert lines[3] == ""
-    assert lines[4] == "2"
-    assert lines[5] == "00:00:04,100 --> 00:00:07,000"
-    assert lines[6] == "How are you?"
-
-
-def test_generate_srt_timestamp_format():
-    """SRT timestamps use comma as decimal separator and HH:MM:SS,mmm format."""
-    import transcribe
-    segments = [{"start": 3661.5, "end": 3665.123, "text": "Test", "speaker": "S"}]
-    srt = transcribe.generate_srt(segments)
-    assert "01:01:01,500 --> 01:01:05,123" in srt
-
-
-def test_generate_srt_empty():
-    import transcribe
-    assert transcribe.generate_srt([]) == ""
 
 
 def test_merge_results_two_pointer():
@@ -226,7 +199,8 @@ def test_merge_results_preserves_original_cjk_and_subword_spacing():
 def test_merge_results_separates_adjacent_whisper_segments():
     import transcribe
 
-    whisper_segments = [
+    # CJK + CJK: no space
+    cjk_segments = [
         {
             "start": 0.0,
             "end": 0.8,
@@ -241,10 +215,44 @@ def test_merge_results_separates_adjacent_whisper_segments():
         },
     ]
     speaker_turns = [{"start": 0.0, "end": 2.0, "speaker": "SPEAKER_A"}]
+    result = transcribe.merge_results(cjk_segments, speaker_turns)
+    assert result[0]["text"] == "甲乙"
 
-    result = transcribe.merge_results(whisper_segments, speaker_turns)
+    # English + English: single space
+    en_segments = [
+        {
+            "start": 0.0,
+            "end": 0.8,
+            "text": "Hello",
+            "words": [{"start": 0.0, "end": 0.8, "word": "Hello"}],
+        },
+        {
+            "start": 0.9,
+            "end": 1.7,
+            "text": "world",
+            "words": [{"start": 0.9, "end": 1.7, "word": "world"}],
+        },
+    ]
+    result_en = transcribe.merge_results(en_segments, speaker_turns)
+    assert result_en[0]["text"] == "Hello world"
 
-    assert result[0]["text"] == "甲 乙"
+    # CJK + English: single space
+    mixed_segments = [
+        {
+            "start": 0.0,
+            "end": 0.8,
+            "text": "项目",
+            "words": [{"start": 0.0, "end": 0.8, "word": "项目"}],
+        },
+        {
+            "start": 0.9,
+            "end": 1.7,
+            "text": "roadmap",
+            "words": [{"start": 0.9, "end": 1.7, "word": "roadmap"}],
+        },
+    ]
+    result_mixed = transcribe.merge_results(mixed_segments, speaker_turns)
+    assert result_mixed[0]["text"] == "项目 roadmap"
 
 
 def test_merge_results_falls_back_without_dropping_segments_missing_words():
@@ -469,3 +477,164 @@ def test_get_wav_duration_handles_odd_sized_chunks(tmp_path):
     wav.write_bytes(b"RIFF" + struct.pack("<I", len(body) + 4) + b"WAVE" + body)
 
     assert transcribe.get_wav_duration(wav) == 1.0
+
+
+def test_is_cjk_char_coverage():
+    """_is_cjk_char must cover Hanzi, Hiragana, Katakana, Hangul, and fullwidth punctuation."""
+    import transcribe
+
+    # Chinese Hanzi
+    assert transcribe._is_cjk_char("中")
+    assert transcribe._is_cjk_char("文")
+    # Japanese Hiragana & Katakana
+    assert transcribe._is_cjk_char("あ")
+    assert transcribe._is_cjk_char("ん")
+    assert transcribe._is_cjk_char("ア")
+    assert transcribe._is_cjk_char("ン")
+    # Korean Hangul
+    assert transcribe._is_cjk_char("한")
+    assert transcribe._is_cjk_char("글")
+    # Bopomofo & Extended CJK
+    assert transcribe._is_cjk_char("ㄅ")
+    assert transcribe._is_cjk_char("ㄆ")
+    assert transcribe._is_cjk_char("㊀")
+    assert transcribe._is_cjk_char("㌀")
+    assert transcribe._is_cjk_char("㆐")
+    # CJK / Fullwidth Punctuation
+    assert transcribe._is_cjk_char("。")
+    assert transcribe._is_cjk_char("、")
+    assert transcribe._is_cjk_char("，")
+    assert transcribe._is_cjk_char("！")
+    assert transcribe._is_cjk_char("？")
+    assert transcribe._is_cjk_char("；")
+    assert transcribe._is_cjk_char("：")
+    assert transcribe._is_cjk_char("（")
+    assert transcribe._is_cjk_char("）")
+    assert transcribe._is_cjk_char("“")
+    assert transcribe._is_cjk_char("”")
+    assert transcribe._is_cjk_char("—")
+    assert transcribe._is_cjk_char("…")
+
+    # Non-CJK
+    assert not transcribe._is_cjk_char("a")
+    assert not transcribe._is_cjk_char("Z")
+    assert not transcribe._is_cjk_char("1")
+    assert not transcribe._is_cjk_char(",")
+    assert not transcribe._is_cjk_char(".")
+    assert not transcribe._is_cjk_char(" ")
+    assert not transcribe._is_cjk_char("")
+
+
+def test_typography_spacing_rules():
+    """Verify Chinese/CJK and Western typography rules:
+    - CJK + CJK: no space
+    - CJK + punct: no space
+    - punct + CJK: no space
+    - CJK + Western / Western + CJK: single space
+    - Western + Western: single space
+    """
+    import transcribe
+
+    # 中+中不加空格
+    assert transcribe._join_display_text("你好", "世界") == "你好世界"
+    assert transcribe._join_whisper_segment_text("今天天气", "真好") == "今天天气真好"
+    # 日文 / 韩文
+    assert transcribe._join_display_text("食", "べる") == "食べる"
+    assert transcribe._join_display_text("안녕", "하세요") == "안녕하세요"
+
+    # 中+标点不加空格
+    assert transcribe._join_display_text("你好", "，世界") == "你好，世界"
+    assert transcribe._join_display_text("很好", "。") == "很好。"
+    assert transcribe._join_display_text("很好", "!") == "很好!"
+    assert transcribe._join_display_text("“", "你好") == "“你好"
+    assert transcribe._join_display_text("你好", "”") == "你好”"
+    assert transcribe._join_display_text("（", "会议") == "（会议"
+    assert transcribe._join_display_text("会议", "）") == "会议）"
+    assert transcribe._join_display_text("他说", '"Hello"') == '他说"Hello"'
+    assert transcribe._join_display_text('"Hello"', "他说") == '"Hello"他说'
+
+    # 中+英 / 英+中保留单空格
+    assert transcribe._join_display_text("使用", "vLLM") == "使用 vLLM"
+    assert transcribe._join_display_text("vLLM", "模型") == "vLLM 模型"
+    assert transcribe._join_display_text("项目", "roadmap") == "项目 roadmap"
+    assert transcribe._join_display_text("roadmap", "评审") == "roadmap 评审"
+    assert transcribe._join_display_text("共", "3") == "共 3"
+
+    # 英+英保留单空格
+    assert transcribe._join_display_text("Hello", "world") == "Hello world"
+    assert transcribe._join_whisper_segment_text("Machine", "learning") == "Machine learning"
+
+    # 英+标点 / 标点+英 / 引号与括号
+    assert transcribe._join_display_text("Hello", ",") == "Hello,"
+    assert transcribe._join_display_text("Hello,", "world") == "Hello, world"
+    assert transcribe._join_display_text("(", "example") == "(example"
+    assert transcribe._join_display_text("你好，", "world") == "你好，world"
+    assert transcribe._join_display_text("She said", "(whispered)") == "She said (whispered)"
+    assert transcribe._join_display_text("(whispered)", "she said") == "(whispered) she said"
+    assert transcribe._join_display_text('"Hello,"', "she said") == '"Hello," she said'
+    assert transcribe._join_display_text("She said", '"Hello"') == 'She said "Hello"'
+    assert transcribe._join_display_text("She said.", "(whispered)") == "She said. (whispered)"
+
+
+def test_merge_results_paragraph_fallback_cjk_spacing():
+    """Paragraph-level fallback (without word timestamps) must not inject spaces between CJK segments."""
+    import transcribe
+
+    cjk_whisper_segments = [
+        {"start": 0.0, "end": 1.0, "text": "第一段讨论"},
+        {"start": 1.2, "end": 2.0, "text": "第二段结论"},
+    ]
+    turns = [{"start": 0.0, "end": 3.0, "speaker": "SPEAKER_00"}]
+    res = transcribe.merge_results(cjk_whisper_segments, turns)
+    assert len(res) == 1
+    assert res[0]["text"] == "第一段讨论第二段结论"
+
+    en_whisper_segments = [
+        {"start": 0.0, "end": 1.0, "text": "First topic"},
+        {"start": 1.2, "end": 2.0, "text": "second topic"},
+    ]
+    res_en = transcribe.merge_results(en_whisper_segments, turns)
+    assert len(res_en) == 1
+    assert res_en[0]["text"] == "First topic second topic"
+
+
+def test_whisper_initial_prompt_passed_for_punctuation(tmp_path, monkeypatch):
+    """run_whisper must pass initial_prompt to model.transcribe to guide natural punctuation."""
+    import json
+    from types import SimpleNamespace
+    import transcribe
+
+    observed_prompts = []
+
+    class FakeModel:
+        def transcribe(self, _path, **kwargs):
+            observed_prompts.append(kwargs.get("initial_prompt"))
+            seg = SimpleNamespace(
+                start=0.0, end=1.0, text="测试，标点。",
+                words=[SimpleNamespace(start=0.0, end=1.0, word="测试，标点。")],
+            )
+            return iter([seg]), SimpleNamespace(duration=1.0, language="zh", language_probability=1.0)
+
+    monkeypatch.setattr(transcribe, "_resolve_device", lambda: "cpu")
+    monkeypatch.setattr(transcribe, "get_whisper_model", lambda *args: FakeModel())
+
+    # Default / auto-detect (None)
+    transcribe.run_whisper(tmp_path / "audio.wav", tmp_path / "w1.json", None)
+    assert observed_prompts[-1] == "以下是普通话的会议记录，包含完整的标点符号。"
+
+    # English forced
+    transcribe.run_whisper(tmp_path / "audio.wav", tmp_path / "w2.json", "en")
+    assert observed_prompts[-1] == "Here is a transcript of the meeting with complete punctuation."
+
+    # Japanese forced
+    transcribe.run_whisper(tmp_path / "audio.wav", tmp_path / "w3.json", "ja")
+    assert observed_prompts[-1] == "これは会議の書き起こしです。句読点を含めます。"
+
+    # Korean forced
+    transcribe.run_whisper(tmp_path / "audio.wav", tmp_path / "w4.json", "ko")
+    assert observed_prompts[-1] == "다음은 회의 녹취록이며 완전한 구두점이 포함되어 있습니다."
+
+    # French forced (should NOT receive Chinese prompt)
+    transcribe.run_whisper(tmp_path / "audio.wav", tmp_path / "w5.json", "fr")
+    assert observed_prompts[-1] == "Here is a transcript of the meeting with complete punctuation."
+

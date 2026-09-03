@@ -126,7 +126,7 @@ if QT_AVAILABLE:
             self.manual_pipeline.addItems(["Full pipeline", "Transcribe only", "Re-diarize only"])
 
             self.manual_format = QComboBox()
-            self.manual_format.addItems(["md", "srt", "txt"])
+            self.manual_format.addItems(["md", "txt"])
 
             self.manual_speakers = QComboBox()
             self.manual_speakers.addItems(["auto", "2", "3", "4", "5"])
@@ -391,7 +391,7 @@ if QT_AVAILABLE:
             self.hide()
             self.app.tray.showMessage("Still running in background", "The watcher continues in the system tray.", QSystemTrayIcon.MessageIcon.Information, 3000)
 
-        def refresh(self):
+        def refresh(self, update_recent: bool = True):
             settings = self.app.service.settings
             self.watch_path.setText(settings.watch_dir)
             self.watch_toggle.blockSignals(True)
@@ -429,8 +429,19 @@ if QT_AVAILABLE:
                 self.progress.setValue(0)
                 self.elapsed.setText("")
                 self.cancel_button.setVisible(False)
+            if update_recent:
+                self.refresh_recent_list()
+            watcher = "Watching" if settings.watcher_enabled else "Paused"
+            self.watch_detail.setText(f"{watcher} · new files only · one worker at a time")
+
+        def refresh_recent_list(self):
+            selected_job_id = None
+            current_item = self.recent_list.currentItem()
+            if current_item is not None:
+                selected_job_id = current_item.data(Qt.ItemDataRole.UserRole)
             rows = self.app.service.store.recent(20)
             self.recent_list.clear()
+            restore_item = None
             for row in rows:
                 name = Path(row["source_path"]).name
                 status = row["status"].replace("_", " ")
@@ -439,8 +450,10 @@ if QT_AVAILABLE:
                 item.setData(Qt.ItemDataRole.UserRole, row["job_id"])
                 item.setToolTip(row.get("message", ""))
                 self.recent_list.addItem(item)
-            watcher = "Watching" if settings.watcher_enabled else "Paused"
-            self.watch_detail.setText(f"{watcher} · new files only · one worker at a time")
+                if selected_job_id is not None and row["job_id"] == selected_job_id:
+                    restore_item = item
+            if restore_item is not None:
+                self.recent_list.setCurrentItem(restore_item)
 
         def append_log(self, message: str):
             timestamp = datetime.now().strftime("%H:%M:%S")
@@ -563,7 +576,11 @@ if QT_AVAILABLE:
             elif event not in {"progress", "heartbeat"}:
                 self.dashboard.append_log(message)
             if self.dashboard.isVisible():
-                self.dashboard.refresh()
+                is_state_transition = event in {
+                    "queued", "started", "completed", "completed_with_warning",
+                    "failed", "cancelled", "cancel_requested", "service_started",
+                }
+                self.dashboard.refresh(update_recent=is_state_transition)
 
         def _update_tooltip(self):
             active = self.service.worker.active

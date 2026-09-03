@@ -27,6 +27,24 @@ if hasattr(sys.stdout, "reconfigure"):
 if hasattr(sys.stderr, "reconfigure"):
     sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
+# On Windows, ensure CTranslate2 can load cuBLAS / cuDNN from torch/lib to prevent silent CPU fallback
+_TORCH_DLL_HANDLE = None
+if sys.platform == "win32" and hasattr(os, "add_dll_directory"):
+    try:
+        import importlib.util
+        _spec = importlib.util.find_spec("torch")
+        if _spec and _spec.submodule_search_locations:
+            for _loc in _spec.submodule_search_locations:
+                _cand = Path(_loc) / "lib"
+                if _cand.is_dir():
+                    _TORCH_DLL_HANDLE = os.add_dll_directory(str(_cand))
+                    cand_str = str(_cand)
+                    if cand_str not in os.environ.get("PATH", ""):
+                        os.environ["PATH"] = cand_str + os.pathsep + os.environ.get("PATH", "")
+                    break
+    except Exception:
+        pass
+
 import warnings
 import logging
 import threading
@@ -394,7 +412,11 @@ def convert_to_wav(input_path: Path, output_path: Path):
     print(f"[1/4] Converting audio → 16kHz mono WAV...", flush=True)
     try:
         result = subprocess.run(
-            ["ffmpeg", "-y", "-i", str(input_path), "-ac", "1", "-ar", "16000", str(partial_path)],
+            [
+                "ffmpeg", "-nostdin", "-y", "-i", str(input_path),
+                "-vn", "-sn", "-dn",
+                "-ac", "1", "-ar", "16000", str(partial_path),
+            ],
             stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True,
             encoding="utf-8", errors="replace",
         )
@@ -456,6 +478,17 @@ def run_whisper(wav_path: Path, whisper_json: Path, language: str | None,
     print(f"      Model loaded. Transcribing [{lang_display}]...", flush=True)
     _emit_event("stage", stage="transcribing", progress=0.0,
                 message=f"Transcribing [{lang_display}]")
+    if language == "en":
+        initial_prompt = "Here is a transcript of the meeting with complete punctuation."
+    elif language == "ja":
+        initial_prompt = "これは会議の書き起こしです。句読点を含めます。"
+    elif language == "ko":
+        initial_prompt = "다음은 회의 녹취록이며 완전한 구두점이 포함되어 있습니다."
+    elif language == "zh" or language is None:
+        initial_prompt = "以下是普通话的会议记录，包含完整的标点符号。"
+    else:
+        initial_prompt = "Here is a transcript of the meeting with complete punctuation."
+
     seg_iter, info = model.transcribe(
         str(wav_path),
         language=language,
@@ -464,6 +497,7 @@ def run_whisper(wav_path: Path, whisper_json: Path, language: str | None,
         vad_filter=True,
         vad_parameters=dict(min_silence_duration_ms=2000),
         hotwords=hotwords or None,
+        initial_prompt=initial_prompt,
     )
 
     segments = []
@@ -658,36 +692,196 @@ def _append_word_text(current: str, word: str) -> str:
 
 
 def _is_cjk_char(char: str) -> bool:
-    return bool(char) and ("\u3400" <= char <= "\u9fff" or "\uf900" <= char <= "\ufaff")
+    """Return True if character is CJK ideograph, kana, hangul, or fullwidth/CJK punctuation."""
+    if not char or len(char) != 1:
+        return False
+    cp = ord(char)
+    return (
+        # CJK Unified Ideographs & Extensions A-J
+        (0x4E00 <= cp <= 0x9FFF) or
+        (0x3400 <= cp <= 0x4DBF) or
+        (0x20000 <= cp <= 0x2EBEF) or
+        (0x30000 <= cp <= 0x323AF) or
+        # CJK Compatibility Ideographs & Supplement
+        (0xF900 <= cp <= 0xFAFF) or
+        (0x2F800 <= cp <= 0x2FA1F) or
+        # Japanese Hiragana, Katakana, and Extensions
+        (0x3040 <= cp <= 0x309F) or
+        (0x30A0 <= cp <= 0x30FF) or
+        (0x31F0 <= cp <= 0x31FF) or
+        (0x1B000 <= cp <= 0x1B12F) or
+        (0x1B130 <= cp <= 0x1B16F) or
+        (0x1AFF0 <= cp <= 0x1AFFF) or
+        # Korean Hangul Syllables, Jamo, Compatibility Jamo, Extended A/B
+        (0xAC00 <= cp <= 0xD7AF) or
+        (0x1100 <= cp <= 0x11FF) or
+        (0x3130 <= cp <= 0x318F) or
+        (0xA960 <= cp <= 0xA97F) or
+        (0xD7B0 <= cp <= 0xD7FF) or
+        # Bopomofo (注音符号) & Bopomofo Extended
+        (0x3100 <= cp <= 0x312F) or
+        (0x31A0 <= cp <= 0x31BF) or
+        # CJK Strokes & Kanbun
+        (0x3190 <= cp <= 0x31EF) or
+        # Enclosed CJK Letters and Months & CJK Compatibility
+        (0x3200 <= cp <= 0x32FF) or
+        (0x3300 <= cp <= 0x33FF) or
+        # Yijing Hexagram Symbols
+        (0x4DC0 <= cp <= 0x4DFF) or
+        # CJK Symbols and Punctuation (e.g., 、。〈〉《》「」『』【】〔〕〖〗〜)
+        (0x3000 <= cp <= 0x303F) or
+        # Halfwidth and Fullwidth Forms
+        (0xFF00 <= cp <= 0xFFEF) or
+        # General Punctuation commonly used in CJK (e.g. — … ‘ ’ “ ”)
+        (0x2010 <= cp <= 0x2027) or
+        (0x2030 <= cp <= 0x205E)
+    )
+
+
+_ASCII_PUNCT = set(".,!?;:%'\"()[]{}-/\\_`~@#$^&*+=|<>")
+_OPENING_BRACKETS = set("([{<“‘「『【《〈〔〖（")
+_CLOSING_PUNCT = set(")]}>”’」』】》〉〕〗）.,!?;:%，。！？；：、")
+_ASCII_QUOTES = set("\"'")
+
+
+def _is_cjk_punct(char: str) -> bool:
+    """Return True if character is a fullwidth or CJK punctuation mark."""
+    if not char or len(char) != 1:
+        return False
+    cp = ord(char)
+    return (
+        (0x3000 <= cp <= 0x303F) or
+        (0xFF01 <= cp <= 0xFF0F) or
+        (0xFF1A <= cp <= 0xFF20) or
+        (0xFF3B <= cp <= 0xFF40) or
+        (0xFF5B <= cp <= 0xFF65) or
+        (0xFFE0 <= cp <= 0xFFEE) or
+        (0x2010 <= cp <= 0x2027) or
+        (0x2030 <= cp <= 0x205E) or
+        char in "，。！？；：、“”‘’《》（）【】〔〕…—～·"
+    )
+
+
+def _is_cjk_text(char: str) -> bool:
+    """Return True if character is a CJK textual character (Hanzi, Kana, Hangul)."""
+    return _is_cjk_char(char) and not _is_cjk_punct(char)
+
+
+def _is_western_char(char: str) -> bool:
+    """Return True if character is a Western/Latin alphanumeric or general non-CJK text character."""
+    if not char or len(char) != 1:
+        return False
+    if _is_cjk_char(char):
+        return False
+    return char.isalnum() or (char.isascii() and char not in _ASCII_PUNCT and not char.isspace())
+
+
+def _needs_space_between(
+    left_char: str,
+    right_char: str,
+    left_is_closing: bool = True,
+    right_is_opening: bool = True,
+) -> bool:
+    """Determine whether a space should be inserted between two characters.
+
+    Rules:
+    - CJK + CJK: No space (中+中不加空格)
+    - CJK + Punctuation / Punctuation + CJK: No space (中+标点不加空格)
+    - Punctuation + Punctuation: No space
+    - CJK punct adjacent to any character: No space (fullwidth punctuation carries its own spacing)
+    - Western + Western: Single space (英+英保留单空格)
+    - CJK text + Western alnum / Western alnum + CJK text: Single space (中+英/英+中保留单空格)
+    - Western alnum + Closing punct: No space (e.g. word.)
+    - Opening punct / quote + Western alnum: No space (e.g. (word, "word)
+    - Western alnum + Opening bracket / quote: Single space (e.g. word (, word ")
+    - Western closing punct / quote + Western alnum: Single space (e.g. word, next, "word" next)
+    - Western closing punct / quote + Opening bracket / quote: Single space (e.g. word. (Next))
+    """
+    if not left_char or not right_char:
+        return False
+
+    # Any CJK/fullwidth punctuation has built-in spacing; never add space adjacent to it
+    if _is_cjk_punct(left_char) or _is_cjk_punct(right_char):
+        return False
+
+    # CJK text + CJK text: no space (中+中不加空格)
+    if _is_cjk_text(left_char) and _is_cjk_text(right_char):
+        return False
+
+    # CJK text + punctuation / punctuation + CJK text: no space (中+标点不加空格)
+    if _is_cjk_text(left_char) and (
+        right_char in _CLOSING_PUNCT or right_char in _ASCII_PUNCT
+        or right_char in _OPENING_BRACKETS or right_char in _ASCII_QUOTES
+    ):
+        return False
+    if (
+        _is_cjk_punct(left_char) or left_char in _OPENING_BRACKETS
+        or left_char in _CLOSING_PUNCT or left_char in _ASCII_PUNCT
+        or left_char in _ASCII_QUOTES
+    ) and _is_cjk_text(right_char):
+        return False
+
+    # Western alnum + Closing punctuation (e.g. "word,") -> no space
+    if _is_western_char(left_char) and (
+        right_char in _CLOSING_PUNCT or (right_char in _ASCII_QUOTES and not right_is_opening)
+    ):
+        return False
+
+    # Opening punctuation / quote + Western alnum (e.g. "(word", '"word') -> no space
+    if (left_char in _OPENING_BRACKETS or (left_char in _ASCII_QUOTES and not left_is_closing)) and _is_western_char(right_char):
+        return False
+
+    # Western alnum + Opening bracket / quote (e.g. "word (", 'word "') -> single space
+    if _is_western_char(left_char) and (
+        right_char in _OPENING_BRACKETS or (right_char in _ASCII_QUOTES and right_is_opening)
+    ):
+        return True
+
+    # Western closing punct / quote + Opening bracket / quote (e.g. "word. (Next)", '"Hello!" (whispered)') -> single space
+    if (
+        left_char in _CLOSING_PUNCT or (left_char in _ASCII_QUOTES and left_is_closing)
+    ) and (
+        right_char in _OPENING_BRACKETS or (right_char in _ASCII_QUOTES and right_is_opening)
+    ):
+        return True
+
+    # Western closing punct / quote + Western alnum (e.g. "Hello," + "world", '"Hello,"' + "she") -> single space
+    if (
+        left_char in _CLOSING_PUNCT or (left_char in _ASCII_QUOTES and left_is_closing)
+    ) and _is_western_char(right_char):
+        return True
+
+    # CJK text + Western alnum or Western alnum + CJK text -> single space (中+英/英+中保留单空格)
+    if _is_cjk_text(left_char) and _is_western_char(right_char):
+        return True
+    if _is_western_char(left_char) and _is_cjk_text(right_char):
+        return True
+
+    # Western + Western -> single space (英+英保留单空格)
+    if _is_western_char(left_char) and _is_western_char(right_char):
+        return True
+
+    return False
 
 
 def _join_display_text(current: str, addition: str) -> str:
-    """Join adjacent display blocks without inventing CJK whitespace."""
+    """Join adjacent display blocks following Chinese/CJK and Western typography rules."""
     current = current.rstrip()
     addition = addition.lstrip()
     if not current:
         return addition
     if not addition:
         return current
-    punctuation = ".,!?;:%，。！？；：、）)]}"
-    if (addition[0] in punctuation or current[-1] in punctuation or
-            _is_cjk_char(current[-1]) or _is_cjk_char(addition[0])):
-        return current + addition
-    return current + " " + addition
+    left_is_closing = len(current) > 1 or current not in _ASCII_QUOTES
+    right_is_opening = len(addition) > 1 or addition not in _ASCII_QUOTES
+    if _needs_space_between(current[-1], addition[0], left_is_closing, right_is_opening):
+        return current + " " + addition
+    return current + addition
 
 
 def _join_whisper_segment_text(current: str, addition: str) -> str:
-    """Separate adjacent Whisper segments while keeping punctuation tight."""
-    current = current.rstrip()
-    addition = addition.lstrip()
-    if not current:
-        return addition
-    if not addition:
-        return current
-    if (addition[0] in ".,!?;:%，。！？；：、）)]}" or
-            current[-1] in "([{\"“‘"):
-        return current + addition
-    return current + " " + addition
+    """Separate adjacent Whisper segments following CJK and Western typography rules."""
+    return _join_display_text(current, addition)
 
 
 def _coalesce_short_speaker_runs(segments: list[dict], max_duration: float = 1.0) -> list[dict]:
@@ -821,7 +1015,7 @@ def merge_results(whisper_segments: list[dict], speaker_turns: list[dict]) -> li
     for seg in labeled:
         if merged and merged[-1]["speaker"] == seg["speaker"] and seg["start"] - merged[-1]["end"] <= 2.0:
             merged[-1]["end"] = seg["end"]
-            merged[-1]["text"] += " " + seg["text"]
+            merged[-1]["text"] = _join_display_text(merged[-1]["text"], seg["text"])
         else:
             merged.append(dict(seg))
 
@@ -871,26 +1065,6 @@ def generate_markdown(segments: list[dict], source_file: str, total_sec: float,
     return "\n".join(lines)
 
 
-def generate_srt(segments: list[dict]) -> str:
-    if not segments:
-        return ""
-
-    def _srt_ts(sec: float) -> str:
-        h, rem = divmod(int(sec), 3600)
-        m, s = divmod(rem, 60)
-        ms = min(round((sec - int(sec)) * 1000), 999)
-        return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
-
-    blocks = []
-    for i, seg in enumerate(segments, 1):
-        blocks.append(
-            f"{i}\n"
-            f"{_srt_ts(seg['start'])} --> {_srt_ts(seg['end'])}\n"
-            f"{seg['text'].strip()}"
-        )
-    return "\n\n".join(blocks)
-
-
 def _clean_speaker_mapping(mapping: dict[str, str] | None) -> dict[str, str]:
     return {
         str(old): str(new).strip()
@@ -932,8 +1106,6 @@ def _merged_cache_key(whisper_key: str, max_speakers: int | None,
 def _render_output(segments: list[dict], output_format: str, source_file: str,
                    total_sec: float, has_diarization: bool,
                    language: str | None) -> str:
-    if output_format == "srt":
-        return generate_srt(segments)
     if output_format == "txt":
         return "\n\n".join(segment["text"].strip() for segment in segments)
     return generate_markdown(
@@ -959,7 +1131,7 @@ def rename_output(source_path: Path, output_path: Path, mapping: dict[str, str])
     segments = rename_speakers_in_segments(payload["result"], aliases)
 
     # Keep the canonical diarization labels in ``result`` and store display
-    # names as metadata. This makes a later SRT/TXT/Markdown regeneration
+    # names as metadata. This makes a later TXT/Markdown regeneration
     # reuse the user's names without changing the underlying model output.
     metadata = {
         key: value for key, value in payload.items()
@@ -977,7 +1149,7 @@ def rename_output(source_path: Path, output_path: Path, mapping: dict[str, str])
         metadata=metadata,
     )
     output_format = output_path.suffix.lower().lstrip(".") or "md"
-    if output_format not in {"md", "srt", "txt"}:
+    if output_format not in {"md", "txt"}:
         output_format = "md"
     total_sec = float(payload.get("total_sec") or 0.0)
     if total_sec <= 0:
@@ -1114,10 +1286,7 @@ def run_job_from_json(data: dict):
     fmt = output_format
     _emit_event("stage", stage="writing", progress=0.0, message=f"Writing {fmt} output")
     display_segments = rename_speakers_in_segments(segments, speaker_aliases)
-    if fmt == "srt":
-        content = generate_srt(display_segments)
-        out_path = paths["output_md"].with_suffix(".srt")
-    elif fmt == "txt":
+    if fmt == "txt":
         content = "\n\n".join(seg["text"].strip() for seg in display_segments)
         out_path = paths["output_md"].with_suffix(".txt")
     else:
@@ -1169,8 +1338,8 @@ def _main():
                         help="Comma-separated names or technical terms to bias Whisper")
     parser.add_argument("--output-dir", default=None,
                         help="Directory for output .md file. Overrides config.py TRANSCRIPT_DIR")
-    parser.add_argument("--output-format", choices=["md", "srt", "txt"], default="md",
-                        help="Output format: md (Markdown), srt (subtitles), txt (plain text)")
+    parser.add_argument("--output-format", choices=["md", "txt"], default="md",
+                        help="Output format: md (Markdown), txt (plain text)")
     args = parser.parse_args()
 
     if args.server:
@@ -1287,10 +1456,7 @@ def _main():
     _emit_event("stage", stage="writing", progress=0.0,
                 message=f"Writing {fmt} output")
     display_segments = rename_speakers_in_segments(segments, speaker_aliases)
-    if fmt == "srt":
-        content = generate_srt(display_segments)
-        out_path = paths["output_md"].with_suffix(".srt")
-    elif fmt == "txt":
+    if fmt == "txt":
         content = "\n\n".join(seg["text"].strip() for seg in display_segments)
         out_path = paths["output_md"].with_suffix(".txt")
     else:

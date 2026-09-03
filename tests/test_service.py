@@ -349,14 +349,14 @@ def test_run_one_uses_job_options(tmp_path, monkeypatch):
     options = {
         "language": "ja",
         "pipeline": "Transcribe only",
-        "output_format": "srt",
+        "output_format": "txt",
         "max_speakers": "3"
     }
     job = store.create_if_new(source, options)
     from paths import transcript_path
-    expected_output = transcript_path(source, Path(settings.transcript_dir), "srt")
+    expected_output = transcript_path(source, Path(settings.transcript_dir), "txt")
     expected_output.parent.mkdir(parents=True, exist_ok=True)
-    expected_output.write_text("subtitle", encoding="utf-8")
+    expected_output.write_text("plain text transcript", encoding="utf-8")
 
     captured = {}
 
@@ -392,7 +392,7 @@ def test_run_one_uses_job_options(tmp_path, monkeypatch):
     assert task["transcribe_only"] is True
     assert task["diarize_only"] is False
     assert task["max_speakers"] == "3"
-    assert task["output_format"] == "srt"
+    assert task["output_format"] == "txt"
     assert store.get(job["job_id"])["status"] == "completed"
 
 
@@ -1118,3 +1118,79 @@ def test_server_startup_timeout_terminates_process(tmp_path, monkeypatch):
         controller._ensure_server_running()
     assert controller._proc is None
     controller.stop()
+
+
+def test_watcher_sharing_violation_keeps_pending_without_premature_completion(tmp_path, monkeypatch):
+    """FileWatcher must not mark a file ready if open('r+b') raises sharing violation (OBS writing)."""
+    settings = _settings(tmp_path)
+    events = []
+    watcher = FileWatcher(settings, lambda event, payload: events.append((event, payload)))
+    video = Path(settings.watch_dir) / "recording.mp4"
+    video.write_bytes(b"v" * 200 * 1024)
+    key = str(video.resolve())
+
+    # Put file into pending as if it reached stable duration
+    watcher._pending[key] = (video.stat().st_size, time.time() - 10)
+
+    # Simulate OBS holding exclusive write lock (PermissionError / sharing conflict)
+    orig_open = open
+    lock_active = True
+
+    def mock_open(file, mode="r", *args, **kwargs):
+        if lock_active and str(Path(file).resolve()) == key and "r+b" in mode:
+            raise PermissionError(13, "The process cannot access the file because it is being used by another process.")
+        return orig_open(file, mode, *args, **kwargs)
+
+    monkeypatch.setattr("builtins.open", mock_open)
+
+    # While locked by OBS, tick_once must return empty and keep the file pending
+    ready = watcher.tick_once()
+    assert ready == []
+    assert key in watcher._pending
+    assert key not in watcher._known
+    assert not any(event == "ready" for event, _ in events)
+
+    # When OBS finishes and releases the lock, tick_once must recognize it once stable_seconds pass
+    lock_active = False
+    ready = watcher.tick_once(now=time.time() + 10)
+    assert ready == [video.resolve()]
+    assert key not in watcher._pending
+    assert key in watcher._known
+    assert any(event == "ready" for event, _ in events)
+
+
+def test_watcher_readonly_file_is_not_stalled(tmp_path, monkeypatch):
+    """FileWatcher must not stall read-only files whose open('r+b') fails with winerror 5 (Access Denied) but open('rb') succeeds."""
+    settings = _settings(tmp_path)
+    events = []
+    watcher = FileWatcher(settings, lambda event, payload: events.append((event, payload)))
+    video = Path(settings.watch_dir) / "readonly_recording.mp4"
+    video.write_bytes(b"v" * 200 * 1024)
+    key = str(video.resolve())
+
+    watcher._pending[key] = (video.stat().st_size, time.time() - 10)
+
+    orig_open = open
+
+    def mock_open(file, mode="r", *args, **kwargs):
+        if str(Path(file).resolve()) == key and "r+b" in mode:
+            err = PermissionError(13, "Access is denied")
+            err.winerror = 5
+            raise err
+        return orig_open(file, mode, *args, **kwargs)
+
+    monkeypatch.setattr("builtins.open", mock_open)
+
+    ready = watcher.tick_once()
+    assert ready == [video.resolve()]
+    assert key not in watcher._pending
+    assert key in watcher._known
+    assert any(event == "ready" for event, _ in events)
+
+
+def test_watch_extensions_includes_ts_flac_aac_opus():
+    """WATCH_EXTENSIONS must include new video/audio formats (.ts, .flac, .aac, .opus)."""
+    import config
+    for ext in [".ts", ".flac", ".aac", ".opus"]:
+        assert ext in config.WATCH_EXTENSIONS
+

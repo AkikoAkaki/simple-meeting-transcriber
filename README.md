@@ -22,14 +22,14 @@ Let's first look at what you've been working on.
 Can you see my screen? So I ran the layout experiment...
 ```
 
-Output formats: **Markdown** (`.md`), **SRT subtitles** (`.srt`), or **plain text** (`.txt`).
+Output formats: **Markdown** (`.md`) or **plain text** (`.txt`).
 
 ---
 
 ## Features
 
 - **Speaker diarization** — labels each segment with a speaker ID
-- **Three output formats** — Markdown for notes, SRT for video editing, plain text for LLMs
+- **Markdown & plain text output** — Markdown for notes, plain text for LLMs
 - **Flexible pipeline** — run full pipeline, transcription only, or re-diarize existing output
 - **Offline** — all models run locally; no API key, no cloud service
 - **GPU-accelerated** — uses CUDA if available, falls back to CPU automatically
@@ -129,8 +129,7 @@ python transcribe.py meeting.mp4 --transcribe-only
 # Re-run diarization on existing cached Whisper output
 python transcribe.py meeting.mp4 --diarize-only
 
-# Choose output format
-python transcribe.py meeting.mp4 --output-format srt
+# Choose output format (md by default, or txt for LLM input)
 python transcribe.py meeting.mp4 --output-format txt
 
 # Override model, device, speaker count, or output location

@@ -22,14 +22,14 @@
 能看到我的屏幕吗？我跑了一下布局实验……
 ```
 
-输出格式可选：**Markdown**（`.md`）、**SRT 字幕**（`.srt`）、**纯文本**（`.txt`）。
+输出格式可选：**Markdown**（`.md`）、**纯文本**（`.txt`）。
 
 ---
 
 ## 主要特性
 
 - **说话人识别** — 每段文字标注对应的说话人 ID
-- **三种输出格式** — Markdown 适合做笔记，SRT 适合视频剪辑，纯文本适合输入 LLM
+- **Markdown 与纯文本输出** — Markdown 适合做笔记，纯文本适合输入 LLM
 - **灵活的处理模式** — 完整流程、仅转录、或仅重新做说话人分离
 - **完全离线** — 所有模型本地运行，不需要 API Key，不依赖云服务
 - **GPU 加速** — 检测到 CUDA 自动使用，否则回退到 CPU
@@ -129,8 +129,7 @@ python transcribe.py meeting.mp4 --transcribe-only
 # 仅重新做说话人分离（复用已缓存的 Whisper 结果）
 python transcribe.py meeting.mp4 --diarize-only
 
-# 选择输出格式
-python transcribe.py meeting.mp4 --output-format srt
+# 选择输出格式（默认 md，亦可生成 txt 用于 LLM）
 python transcribe.py meeting.mp4 --output-format txt
 
 # 覆盖模型、设备、说话人数量或输出目录
