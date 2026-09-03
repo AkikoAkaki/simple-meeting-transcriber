@@ -78,7 +78,7 @@ RTX 4060（8 GB 显存），25 分钟视频，`large-v3` 模型：
 | Whisper 转录 | ~8 分钟 |
 | 说话人分离 | ~12 分钟 |
 
-纯 CPU 环境预计慢 5–10 倍。硬件较弱时，可在设置中切换到 `medium` 或 `small` 模型以换取速度。
+纯 CPU 环境预计慢 5–10 倍。
 
 ---
 
@@ -88,7 +88,7 @@ RTX 4060（8 GB 显存），25 分钟视频，`large-v3` 模型：
 可以。CPU 可以正常运行，只是速度较慢。应用会在状态栏提示当前使用 CPU。
 
 **选哪个模型？**
-默认的 `large-v3` 精度最高，推荐直接使用。硬件有限可选 `medium`，速度与精度较为平衡。`small` 和 `base` 更快，但精度明显下降。
+默认 `large-v3-turbo`：又快又准。`large-v3` 在嘈杂音频上准一点，但更慢更吃显存。
 
 **识别出的语言不对？**
 在设置中手动选择语言（自动检测 / English / 中文 / 日本語 / …）。
@@ -129,11 +129,8 @@ python transcribe.py meeting.mp4 --transcribe-only
 # 仅重新做说话人分离（复用已缓存的 Whisper 结果）
 python transcribe.py meeting.mp4 --diarize-only
 
-# 选择输出格式（默认 md，亦可生成 txt 用于 LLM）
-python transcribe.py meeting.mp4 --output-format txt
-
 # 覆盖模型、设备、说话人数量或输出目录
-python transcribe.py meeting.mp4 --model medium --device cpu --max-speakers 3 --output-dir ./my-transcripts
+python transcribe.py meeting.mp4 --model large-v3 --device cpu --max-speakers 3 --output-dir ./my-transcripts
 
 # 已知准确人数时，使用准确人数；可附加人名和专业术语提示
 python transcribe.py meeting.mp4 --num-speakers 3 --hotwords "Alice,vLLM,KV Cache"
@@ -164,7 +161,7 @@ python tray_app.py         # 启动后台托盘服务和 dashboard
 | `WATCH_DIR` | `I:\视频档案` | 监听目录；也可在 dashboard 中修改 |
 | `TRANSCRIPT_DIR` | `transcripts/` | 输出目录 |
 | `CACHE_DIR` | `cache/` | 中间文件缓存，随时可删 |
-| `WHISPER_MODEL` | `large-v3-turbo` | 模型大小：`tiny` / `base` / `small` / `medium` / `large-v3-turbo` / `large-v3` |
+| `WHISPER_MODEL` | `large-v3-turbo` | 模型大小：`large-v3-turbo` / `large-v3` |
 | `LANGUAGE` | `None` | `"zh"` / `"en"` / `"ja"` / … — `None` = 自动检测 |
 | `DEVICE` | `"auto"` | `"cuda"` / `"cpu"` / `"auto"` |
 | `MAX_SPEAKERS` | `None` | 已知说话人数量时填整数，提高准确率 |

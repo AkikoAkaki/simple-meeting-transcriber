@@ -78,7 +78,7 @@ Measured on RTX 4060 (8 GB VRAM), 25-minute video, `large-v3` model:
 | Whisper transcription | ~8 min |
 | Speaker diarization | ~12 min |
 
-On CPU-only hardware, expect 5–10× longer. Switch to `medium` or `small` in Settings to trade accuracy for speed.
+On CPU-only hardware, expect 5–10× longer.
 
 ---
 
@@ -88,7 +88,7 @@ On CPU-only hardware, expect 5–10× longer. Switch to `medium` or `small` in S
 No. CPU works out of the box, just slower. The app shows a note in the status bar if no GPU is detected.
 
 **Which Whisper model should I use?**
-`large-v3` gives the best accuracy and is the default. For weaker hardware, `medium` is a good balance. `small` and `base` are faster but noticeably less accurate.
+`large-v3-turbo` is the default: fast with high accuracy. `large-v3` is slightly more accurate on noisy audio but slower and needs more VRAM.
 
 **The detected language is wrong.**
 Pick your language from the dropdown in Settings (Auto / English / 中文 / 日本語 / …).
@@ -129,11 +129,8 @@ python transcribe.py meeting.mp4 --transcribe-only
 # Re-run diarization on existing cached Whisper output
 python transcribe.py meeting.mp4 --diarize-only
 
-# Choose output format (md by default, or txt for LLM input)
-python transcribe.py meeting.mp4 --output-format txt
-
 # Override model, device, speaker count, or output location
-python transcribe.py meeting.mp4 --model medium --device cpu --max-speakers 3 --output-dir ./my-transcripts
+python transcribe.py meeting.mp4 --model large-v3 --device cpu --max-speakers 3 --output-dir ./my-transcripts
 
 # Set the exact speaker count when known, and optionally bias names/terms
 python transcribe.py meeting.mp4 --num-speakers 3 --hotwords "Alice,vLLM,KV Cache"
@@ -164,7 +161,7 @@ Edit `config.py` to change defaults:
 | `WATCH_DIR` | `I:\视频档案` | Folder the watcher monitors |
 | `TRANSCRIPT_DIR` | `transcripts/` | Output folder |
 | `CACHE_DIR` | `cache/` | Intermediate files — safe to delete any time |
-| `WHISPER_MODEL` | `large-v3-turbo` | Model size: `tiny` / `base` / `small` / `medium` / `large-v3-turbo` / `large-v3` |
+| `WHISPER_MODEL` | `large-v3-turbo` | Model size: `large-v3-turbo` / `large-v3` |
 | `LANGUAGE` | `None` | `"en"` / `"zh"` / `"ja"` / … — `None` = auto-detect |
 | `DEVICE` | `"auto"` | `"cuda"` / `"cpu"` / `"auto"` |
 | `MAX_SPEAKERS` | `None` | Set an integer if you know the speaker count |

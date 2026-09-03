@@ -64,12 +64,10 @@ def _mock_app_and_service():
     return app
 
 
-def test_manual_format_options_do_not_contain_srt(qapp):
+def test_manual_output_is_markdown_only(qapp):
     app = _mock_app_and_service()
     dashboard = tray_app.Dashboard(app)
-    items = [dashboard.manual_format.itemText(i) for i in range(dashboard.manual_format.count())]
-    assert "srt" not in items
-    assert items == ["md", "txt"]
+    assert not hasattr(dashboard, "manual_format")
 
 
 def test_refresh_preserves_selected_job_id(qapp):
@@ -162,10 +160,7 @@ def test_model_box_contains_large_v3_turbo_as_recommended(qapp):
     app = _mock_app_and_service()
     dashboard = tray_app.Dashboard(app)
     items = [dashboard.model_box.itemText(i) for i in range(dashboard.model_box.count())]
-    assert "large-v3-turbo" in items
-    assert items[0] == "large-v3-turbo"
-    for expected in ["large-v3", "medium", "small", "base", "tiny"]:
-        assert expected in items
+    assert items == ["large-v3-turbo", "large-v3"]
 
 
 def test_dashboard_has_preview_label_and_cache_controls(qapp):

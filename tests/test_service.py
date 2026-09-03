@@ -354,7 +354,7 @@ def test_run_one_uses_job_options(tmp_path, monkeypatch):
     }
     job = store.create_if_new(source, options)
     from paths import transcript_path
-    expected_output = transcript_path(source, Path(settings.transcript_dir), "txt")
+    expected_output = transcript_path(source, Path(settings.transcript_dir), "md")
     expected_output.parent.mkdir(parents=True, exist_ok=True)
     expected_output.write_text("plain text transcript", encoding="utf-8")
 
@@ -392,7 +392,7 @@ def test_run_one_uses_job_options(tmp_path, monkeypatch):
     assert task["transcribe_only"] is True
     assert task["diarize_only"] is False
     assert task["max_speakers"] == "3"
-    assert task["output_format"] == "txt"
+    assert task["output_format"] == "md"
     assert store.get(job["job_id"])["status"] == "completed"
 
 

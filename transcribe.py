@@ -379,12 +379,15 @@ def get_hf_token() -> str:
     token = os.environ.get("HF_TOKEN", "").strip()
     if token:
         return token
-    token_file = Path(__file__).parent / "hf_token.txt"
-    if token_file.exists():
-        token = token_file.read_text().strip()
-        if token:
-            print(f"[INFO] Using HF token from hf_token.txt", flush=True)
-            return token
+    # Tray dashboard store (OS keyring with AppData fallback) is the
+    # canonical source. Read it here so CLI runs see the same token.
+    try:
+        from service import TokenStore
+        stored = TokenStore().get()
+        if stored:
+            return stored
+    except Exception:
+        pass
     print("[INFO] No HuggingFace token found — skipping speaker diarization.", flush=True)
     print("       To enable: save a token in the tray dashboard (or set HF_TOKEN env var)", flush=True)
     print("       Accept model terms at: https://hf.co/pyannote/speaker-diarization-3.1", flush=True)
@@ -410,20 +413,26 @@ def convert_to_wav(input_path: Path, output_path: Path):
     _emit_event("stage", stage="converting", progress=0.0,
                 message="Converting audio to 16 kHz mono WAV")
     print(f"[1/4] Converting audio → 16kHz mono WAV...", flush=True)
+    heartbeat_stop, heartbeat_thread = _heartbeat(
+        "converting", "Audio conversion is still running")
     try:
-        result = subprocess.run(
-            [
-                "ffmpeg", "-nostdin", "-y", "-i", str(input_path),
-                "-vn", "-sn", "-dn",
-                "-ac", "1", "-ar", "16000", str(partial_path),
-            ],
-            stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True,
-            encoding="utf-8", errors="replace",
-        )
-    except FileNotFoundError:
-        print("ERROR: ffmpeg not found in PATH.", flush=True)
-        print("       Install ffmpeg: https://ffmpeg.org/download.html", flush=True)
-        raise TranscriptionError("ffmpeg not found in PATH")
+        try:
+            result = subprocess.run(
+                [
+                    "ffmpeg", "-nostdin", "-y", "-i", str(input_path),
+                    "-vn", "-sn", "-dn",
+                    "-ac", "1", "-ar", "16000", str(partial_path),
+                ],
+                stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True,
+                encoding="utf-8", errors="replace",
+            )
+        except FileNotFoundError:
+            print("ERROR: ffmpeg not found in PATH.", flush=True)
+            print("       Install ffmpeg: https://ffmpeg.org/download.html", flush=True)
+            raise TranscriptionError("ffmpeg not found in PATH")
+    finally:
+        heartbeat_stop.set()
+        heartbeat_thread.join(timeout=1)
     if result.returncode != 0:
         partial_path.unlink(missing_ok=True)
         print(f"ERROR: ffmpeg failed (exit {result.returncode}):", flush=True)
@@ -457,8 +466,7 @@ def run_whisper(wav_path: Path, whisper_json: Path, language: str | None,
     device = _resolve_device()
     compute_type = "float16" if device == "cuda" else "int8"
     lang_display = language or "auto-detect"
-    MODEL_SIZES = {"tiny": "~75 MB", "base": "~145 MB", "small": "~466 MB",
-                   "medium": "~1.5 GB", "large-v3": "~3.1 GB", "large-v3-turbo": "~1.6 GB"}
+    MODEL_SIZES = {"large-v3-turbo": "~1.6 GB", "large-v3": "~3.1 GB"}
     size_hint = MODEL_SIZES.get(config.WHISPER_MODEL, "")
     print(f"[2/4] Loading Whisper {config.WHISPER_MODEL} on {device} ({compute_type})...", flush=True)
     _emit_event("stage", stage="loading_whisper", progress=0.0,
@@ -470,7 +478,7 @@ def run_whisper(wav_path: Path, whisper_json: Path, language: str | None,
     except RuntimeError as e:
         if "out of memory" in str(e).lower():
             print("ERROR: GPU out of memory loading Whisper model.", flush=True)
-            print(f"       Try --model medium or --device cpu", flush=True)
+            print(f"       Try --model large-v3-turbo or --device cpu", flush=True)
         else:
             print(f"ERROR: Failed to load Whisper model: {e}", flush=True)
         raise TranscriptionError(f"Failed to load Whisper model: {e}") from e
@@ -489,67 +497,71 @@ def run_whisper(wav_path: Path, whisper_json: Path, language: str | None,
     else:
         initial_prompt = "Here is a transcript of the meeting with complete punctuation."
 
-    seg_iter, info = model.transcribe(
-        str(wav_path),
-        language=language,
-        word_timestamps=True,
-        beam_size=5,
-        vad_filter=True,
-        vad_parameters=dict(min_silence_duration_ms=2000),
-        hotwords=hotwords or None,
-        initial_prompt=initial_prompt,
-    )
-
+    seg_iter = None
+    info = None
     segments = []
-    last_progress = -1.0
-    last_progress_emit = 0.0
-    for s in seg_iter:
-        if not s.text.strip():
-            continue
-        segment = {"start": round(s.start, 2), "end": round(s.end, 2), "text": s.text.strip()}
-        words = []
-        for word in getattr(s, "words", None) or []:
-            word_text = str(getattr(word, "word", ""))
-            word_start = getattr(word, "start", None)
-            word_end = getattr(word, "end", None)
-            if word_text.strip() and word_start is not None and word_end is not None:
-                words.append({
-                    "start": round(float(word_start), 2),
-                    "end": round(float(word_end), 2),
-                    "word": word_text,
-                })
-        if words:
-            segment["words"] = words
-        segments.append(segment)
-        duration = getattr(info, "duration", None)
-        progress = None
-        if duration and duration > 0:
-            progress = min(max(float(s.end) / float(duration), 0.0), 0.99)
-        now = time.monotonic()
-        preview_text = s.text.strip()
-        if (progress is not None and
-                (progress >= 1.0 or progress - last_progress >= 0.01)) or now - last_progress_emit >= 1.0 or last_progress < 0:
-            _emit_event("progress", stage="transcribing", progress=progress,
-                        segments=len(segments), audio_position_sec=round(float(s.end), 2),
-                        message=f"Transcribed through {format_time(s.end)}",
-                        preview=preview_text)
-            last_progress = progress if progress is not None else last_progress
-            last_progress_emit = now
-        if len(segments) % 20 == 0:
-            print(f"      ... {len(segments)} segments, up to {format_time(s.end)}", flush=True)
-
-    if segments:
-        _write_stage_cache(whisper_json, "whisper", cache_key or "legacy", segments)
-    print(f"      Done — {len(segments)} segments | detected: {info.language} ({info.language_probability:.0%})", flush=True)
-    _emit_event("stage", stage="transcribing", progress=1.0,
-                segments=len(segments), message="Whisper transcription completed")
-    clear_whisper_model()
     try:
-        import torch
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-    except ImportError:
-        pass
+        seg_iter, info = model.transcribe(
+            str(wav_path),
+            language=language,
+            word_timestamps=True,
+            beam_size=5,
+            vad_filter=True,
+            vad_parameters=dict(min_silence_duration_ms=2000),
+            hotwords=hotwords or None,
+            initial_prompt=initial_prompt,
+        )
+
+        last_progress = -1.0
+        last_progress_emit = 0.0
+        for s in seg_iter:
+            if not s.text.strip():
+                continue
+            segment = {"start": round(s.start, 2), "end": round(s.end, 2), "text": s.text.strip()}
+            words = []
+            for word in getattr(s, "words", None) or []:
+                word_text = str(getattr(word, "word", ""))
+                word_start = getattr(word, "start", None)
+                word_end = getattr(word, "end", None)
+                if word_text.strip() and word_start is not None and word_end is not None:
+                    words.append({
+                        "start": round(float(word_start), 2),
+                        "end": round(float(word_end), 2),
+                        "word": word_text,
+                    })
+            if words:
+                segment["words"] = words
+            segments.append(segment)
+            duration = getattr(info, "duration", None)
+            progress = None
+            if duration and duration > 0:
+                progress = min(max(float(s.end) / float(duration), 0.0), 0.99)
+            now = time.monotonic()
+            preview_text = s.text.strip()
+            if (progress is not None and
+                    (progress >= 1.0 or progress - last_progress >= 0.01)) or now - last_progress_emit >= 1.0 or last_progress < 0:
+                _emit_event("progress", stage="transcribing", progress=progress,
+                            segments=len(segments), audio_position_sec=round(float(s.end), 2),
+                            message=f"Transcribed through {format_time(s.end)}",
+                            preview=preview_text)
+                last_progress = progress if progress is not None else last_progress
+                last_progress_emit = now
+            if len(segments) % 20 == 0:
+                print(f"      ... {len(segments)} segments, up to {format_time(s.end)}", flush=True)
+
+        if segments:
+            _write_stage_cache(whisper_json, "whisper", cache_key or "legacy", segments)
+        print(f"      Done — {len(segments)} segments | detected: {info.language} ({info.language_probability:.0%})", flush=True)
+        _emit_event("stage", stage="transcribing", progress=1.0,
+                    segments=len(segments), message="Whisper transcription completed")
+    finally:
+        clear_whisper_model()
+        try:
+            import torch
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        except ImportError:
+            pass
     return segments
 
 
@@ -1067,35 +1079,6 @@ def generate_markdown(segments: list[dict], source_file: str, total_sec: float,
     return "\n".join(lines)
 
 
-def _clean_speaker_mapping(mapping: dict[str, str] | None) -> dict[str, str]:
-    return {
-        str(old): str(new).strip()
-        for old, new in (mapping or {}).items()
-        if str(new).strip()
-    }
-
-
-def rename_speakers_in_segments(segments: list[dict], mapping: dict[str, str]) -> list[dict]:
-    """Return a renamed copy without changing the immutable stage caches."""
-    clean_mapping = _clean_speaker_mapping(mapping)
-    return [
-        {**segment, "speaker": clean_mapping.get(segment.get("speaker"), segment.get("speaker"))}
-        for segment in segments
-    ]
-
-
-def _speaker_aliases_for_segments(payload: dict | None,
-                                  segments: list[dict]) -> dict[str, str]:
-    """Keep only remembered names that still match this exact merged result."""
-    aliases = _clean_speaker_mapping((payload or {}).get("speaker_aliases"))
-    labels = {
-        str(segment.get("speaker"))
-        for segment in segments
-        if segment.get("speaker") and segment.get("speaker") != "[unknown]"
-    }
-    return {label: name for label, name in aliases.items() if label in labels}
-
-
 def _merged_cache_key(whisper_key: str, max_speakers: int | None,
                       num_speakers: int | None, has_diarization: bool) -> str:
     return _cache_key(
@@ -1103,73 +1086,6 @@ def _merged_cache_key(whisper_key: str, max_speakers: int | None,
         diarization=_diarization_cache_key(max_speakers, num_speakers),
         has_diarization=bool(has_diarization),
     )
-
-
-def _render_output(segments: list[dict], output_format: str, source_file: str,
-                   total_sec: float, has_diarization: bool,
-                   language: str | None) -> str:
-    if output_format == "txt":
-        return "\n\n".join(segment["text"].strip() for segment in segments)
-    return generate_markdown(
-        segments, source_file, total_sec, has_diarization, language)
-
-
-def rename_output(source_path: Path, output_path: Path, mapping: dict[str, str]) -> Path:
-    """Rename speakers in a completed result and regenerate only its output file."""
-    paths = derive_paths(Path(source_path).resolve())
-    segments_path = paths.get("segments_json")
-    if not segments_path or not segments_path.exists():
-        raise FileNotFoundError(
-            "No merged segment cache is available; run the transcription again first."
-        )
-    payload = _read_stage_payload(segments_path, "merged", None)
-    if payload is None:
-        raise ValueError("Merged segment cache is corrupt or from an unsupported version")
-
-    aliases = _speaker_aliases_for_segments(payload, payload["result"])
-    aliases.update(_clean_speaker_mapping(mapping))
-    aliases = _speaker_aliases_for_segments(
-        {"speaker_aliases": aliases}, payload["result"])
-    segments = rename_speakers_in_segments(payload["result"], aliases)
-
-    # Keep the canonical diarization labels in ``result`` and store display
-    # names as metadata. This makes a later TXT/Markdown regeneration
-    # reuse the user's names without changing the underlying model output.
-    metadata = {
-        key: value for key, value in payload.items()
-        if key not in {"schema_version", "kind", "cache_key", "result"}
-    }
-    if aliases:
-        metadata["speaker_aliases"] = aliases
-    else:
-        metadata.pop("speaker_aliases", None)
-    _write_stage_cache(
-        segments_path,
-        "merged",
-        str(payload.get("cache_key") or "legacy"),
-        payload["result"],
-        metadata=metadata,
-    )
-    output_format = output_path.suffix.lower().lstrip(".") or "md"
-    if output_format not in {"md", "txt"}:
-        output_format = "md"
-    total_sec = float(payload.get("total_sec") or 0.0)
-    if total_sec <= 0:
-        total_sec = get_wav_duration(paths["wav"])
-    if total_sec <= 0 and segments:
-        total_sec = float(segments[-1]["end"])
-    content = _render_output(
-        segments,
-        output_format,
-        str(payload.get("source_file") or Path(source_path).name),
-        total_sec,
-        bool(payload.get("has_diarization")),
-        payload.get("language"),
-    )
-    partial = output_path.with_name(f"{output_path.name}.part")
-    partial.write_text(content, encoding="utf-8")
-    partial.replace(output_path)
-    return output_path
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
@@ -1202,9 +1118,19 @@ def run_server():
             print(f"ERROR: Server loop error: {e}", file=sys.stderr, flush=True)
 
 
+_SUPPORTED_MODELS = frozenset({"large-v3-turbo", "large-v3"})
+_SUPPORTED_DEVICES = frozenset({"auto", "cuda", "cpu"})
+
+
 def run_job_from_json(data: dict):
-    input_path = Path(data["input_path"]).resolve()
-    output_dir = Path(data["output_dir"]).resolve()
+    raw_input = data.get("input_path")
+    if not raw_input:
+        raise ValueError("Job is missing required field: input_path")
+    raw_output = data.get("output_dir")
+    if not raw_output:
+        raise ValueError("Job is missing required field: output_dir")
+    input_path = Path(raw_input).resolve()
+    output_dir = Path(raw_output).resolve()
 
     model_name = data.get("model") or config.WHISPER_MODEL
     device = data.get("device") or config.DEVICE
@@ -1216,18 +1142,45 @@ def run_job_from_json(data: dict):
 
     transcribe_only = data.get("transcribe_only", False)
     diarize_only = data.get("diarize_only", False)
-    output_format = data.get("output_format", "md")
     hotwords = data.get("hotwords", config.HOTWORDS) or ""
     token = data.get("token", "")
 
-    # Apply settings
+    if model_name not in _SUPPORTED_MODELS:
+        raise ValueError(
+            f"Unsupported model: {model_name} "
+            f"(expected one of: {', '.join(sorted(_SUPPORTED_MODELS))})"
+        )
+    if device not in _SUPPORTED_DEVICES:
+        raise ValueError(f"Unsupported device: {device} (expected one of: auto, cuda, cpu)")
+    if not input_path.is_file():
+        raise FileNotFoundError(f"Input file not found: {input_path}")
+
+    # Apply settings for this job only. Snapshot the globals first so the
+    # next job falls back to clean defaults instead of this job's values.
+    _saved_settings = (
+        config.WHISPER_MODEL, config.DEVICE, config.MAX_SPEAKERS,
+        config.NUM_SPEAKERS, config.HOTWORDS, config.TRANSCRIPT_DIR,
+    )
     config.WHISPER_MODEL = model_name
     config.DEVICE = device
     config.MAX_SPEAKERS = max_speakers
     config.NUM_SPEAKERS = num_speakers
     config.HOTWORDS = hotwords
     config.TRANSCRIPT_DIR = output_dir
+    try:
+        _run_job_impl(
+            input_path, output_dir, model_name, device,
+            max_speakers, num_speakers, language,
+            transcribe_only, diarize_only, hotwords, token,
+        )
+    finally:
+        (config.WHISPER_MODEL, config.DEVICE, config.MAX_SPEAKERS,
+         config.NUM_SPEAKERS, config.HOTWORDS, config.TRANSCRIPT_DIR) = _saved_settings
 
+
+def _run_job_impl(input_path, output_dir, model_name, device,
+                  max_speakers, num_speakers, language,
+                  transcribe_only, diarize_only, hotwords, token):
     if not token:
         clear_diarize_pipeline()
 
@@ -1265,36 +1218,22 @@ def run_job_from_json(data: dict):
         total_sec = segments[-1]["end"]
 
     segments_path = paths.get("segments_json")
-    speaker_aliases = {}
     merged_key = _merged_cache_key(
         whisper_key, max_speakers, num_speakers, bool(speaker_turns))
     if segments_path:
-        previous = (
-            _read_stage_payload(segments_path, "merged", merged_key)
-            if segments_path.exists() else None
-        )
-        speaker_aliases = _speaker_aliases_for_segments(previous, segments)
         metadata = {
             "source_file": input_path.name,
             "total_sec": total_sec,
             "language": language,
             "has_diarization": bool(speaker_turns),
         }
-        if speaker_aliases:
-            metadata["speaker_aliases"] = speaker_aliases
         _write_stage_cache(
             segments_path, "merged", merged_key, segments, metadata=metadata)
 
-    fmt = output_format
-    _emit_event("stage", stage="writing", progress=0.0, message=f"Writing {fmt} output")
-    display_segments = rename_speakers_in_segments(segments, speaker_aliases)
-    if fmt == "txt":
-        content = "\n\n".join(seg["text"].strip() for seg in display_segments)
-        out_path = paths["output_md"].with_suffix(".txt")
-    else:
-        content = generate_markdown(display_segments, input_path.name, total_sec,
-                                    bool(speaker_turns), language)
-        out_path = paths["output_md"]
+    _emit_event("stage", stage="writing", progress=0.0, message="Writing md output")
+    content = generate_markdown(segments, input_path.name, total_sec,
+                                bool(speaker_turns), language)
+    out_path = paths["output_md"]
 
     out_path.write_text(content, encoding="utf-8")
     print(f"\n✓ Done → {out_path}", flush=True)
@@ -1329,7 +1268,7 @@ def _main():
     parser.add_argument("--diarize-only", action="store_true",
                         help="Re-run diarization using cached Whisper result")
     parser.add_argument("--model", default=None,
-                        help="Whisper model size (tiny/base/small/medium/large-v3-turbo/large-v3). Overrides config.py")
+                        help="Whisper model size (large-v3-turbo/large-v3). Overrides config.py")
     parser.add_argument("--device", default=None,
                         help="Compute device (auto/cuda/cpu). Overrides config.py")
     parser.add_argument("--max-speakers", default=None, type=int,
@@ -1340,8 +1279,6 @@ def _main():
                         help="Comma-separated names or technical terms to bias Whisper")
     parser.add_argument("--output-dir", default=None,
                         help="Directory for output .md file. Overrides config.py TRANSCRIPT_DIR")
-    parser.add_argument("--output-format", choices=["md", "txt"], default="md",
-                        help="Output format: md (Markdown), txt (plain text)")
     args = parser.parse_args()
 
     if args.server:
@@ -1434,37 +1371,23 @@ def _main():
         total_sec = segments[-1]["end"]
 
     segments_path = paths.get("segments_json")
-    speaker_aliases = {}
     merged_key = _merged_cache_key(
         whisper_key, config.MAX_SPEAKERS, config.NUM_SPEAKERS, bool(speaker_turns))
     if segments_path:
-        previous = (
-            _read_stage_payload(segments_path, "merged", merged_key)
-            if segments_path.exists() else None
-        )
-        speaker_aliases = _speaker_aliases_for_segments(previous, segments)
         metadata = {
             "source_file": input_path.name,
             "total_sec": total_sec,
             "language": language,
             "has_diarization": bool(speaker_turns),
         }
-        if speaker_aliases:
-            metadata["speaker_aliases"] = speaker_aliases
         _write_stage_cache(
             segments_path, "merged", merged_key, segments, metadata=metadata)
 
-    fmt = args.output_format
     _emit_event("stage", stage="writing", progress=0.0,
-                message=f"Writing {fmt} output")
-    display_segments = rename_speakers_in_segments(segments, speaker_aliases)
-    if fmt == "txt":
-        content = "\n\n".join(seg["text"].strip() for seg in display_segments)
-        out_path = paths["output_md"].with_suffix(".txt")
-    else:
-        content = generate_markdown(display_segments, input_path.name, total_sec,
-                                    bool(speaker_turns), language)
-        out_path = paths["output_md"]
+                message="Writing md output")
+    content = generate_markdown(segments, input_path.name, total_sec,
+                                bool(speaker_turns), language)
+    out_path = paths["output_md"]
 
     out_path.write_text(content, encoding="utf-8")
     _emit_event("completed", stage="completed", progress=1.0,

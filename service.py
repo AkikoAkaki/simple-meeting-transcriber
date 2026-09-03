@@ -299,18 +299,6 @@ class TokenStore:
         elif self.file_path.exists():
             self.file_path.unlink()
 
-    def migrate_legacy_file(self, legacy: Path = Path(__file__).parent / "hf_token.txt") -> bool:
-        if self.get() or not legacy.exists():
-            return False
-        try:
-            token = legacy.read_text(encoding="utf-8").strip()
-        except OSError:
-            return False
-        if token:
-            self.set(token)
-            return True
-        return False
-
 
 class JobStore:
     """Small SQLite-backed job and event store.
@@ -534,6 +522,10 @@ class _WatchHandler(FileSystemEventHandler):
 class FileWatcher:
     """Event-driven watcher with a stability debounce for files OBS is writing."""
 
+    # Watchdog can drop events (buffer overflow, sleep/wake, network drives).
+    # Reconcile the directory this often so a missed file is still picked up.
+    RESCAN_INTERVAL_SECONDS = 60.0
+
     def __init__(self, settings: AppSettings, on_event: Callable[[str, dict], None]):
         self.settings = settings
         self.on_event = on_event
@@ -541,6 +533,7 @@ class FileWatcher:
         self._known: set[str] = set()
         self._lock = threading.Lock()
         self._stop = threading.Event()
+        self._last_rescan = time.monotonic()
         self._observer: Observer | None = None
         self._thread: threading.Thread | None = None
         try:
@@ -569,6 +562,7 @@ class FileWatcher:
         self._observer.schedule(_WatchHandler(self), str(root), recursive=False)
         self._observer.start()
         self._stop.clear()
+        self._last_rescan = time.monotonic()
         self._thread = threading.Thread(target=self._tick_loop, name="file-stability", daemon=True)
         self._thread.start()
         self.on_event("watch_started", {"path": str(root), "baseline_count": len(self._known)})
@@ -607,6 +601,45 @@ class FileWatcher:
                 self.on_event("detected", {"path": str(path), "size": stat.st_size})
             elif old[0] != stat.st_size:
                 self._pending[key] = (stat.st_size, time.time())
+
+    def rescan(self) -> None:
+        """Reconcile the watch directory against known/pending state.
+
+        Picks up files whose watchdog events were lost. Already-seen files
+        are skipped, and undersized files are intentionally left silent for
+        a later pass (they may still be growing, and emitting `ignored`
+        here would repeat on every pass). A rescan never emits duplicate
+        events.
+        """
+        root = self._resolved_watch_dir
+        if root is None:
+            return
+        try:
+            entries = list(root.iterdir())
+        except OSError:
+            return
+        with self._lock:
+            known = set(self._known)
+            pending = set(self._pending)
+        try:
+            min_bytes = self.settings.min_file_size_kb * 1024
+        except (AttributeError, TypeError):
+            min_bytes = 0
+        for entry in entries:
+            try:
+                if not _is_supported(entry, self.settings):
+                    continue
+                key = str(entry.resolve())
+            except OSError:
+                continue
+            if key in known or key in pending:
+                continue
+            try:
+                if entry.stat().st_size < min_bytes:
+                    continue
+            except OSError:
+                continue
+            self.track(entry)
 
     def tick_once(self, now: float | None = None) -> list[Path]:
         now = now or time.time()
@@ -669,6 +702,12 @@ class FileWatcher:
     def _tick_loop(self) -> None:
         while not self._stop.wait(2.0):
             self.tick_once()
+            if time.monotonic() - self._last_rescan >= self.RESCAN_INTERVAL_SECONDS:
+                self._last_rescan = time.monotonic()
+                try:
+                    self.rescan()
+                except Exception as exc:
+                    self.on_event("log", {"message": f"Directory rescan failed: {exc}"})
 
 
 class WorkerController:
@@ -846,10 +885,7 @@ class WorkerController:
         exact_spk = options.get("num_speakers") if "num_speakers" in options else self.settings.num_speakers
         hotwords = options.get("hotwords") if "hotwords" in options else self.settings.hotwords
 
-        fmt = options.get("output_format")
         fmt_val = "md"
-        if fmt and "txt" in fmt.lower():
-            fmt_val = "txt"
 
         started = self.store.update_if_status(
             job_id, {"queued"}, status="running", stage="starting",
@@ -908,7 +944,7 @@ class WorkerController:
                             continue
                         worker_failed = worker_failed or kind == "failed"
                         self._apply_worker_event(job_id, event)
-                        if kind in {"completed", "failed", "cancelled"}:
+                        if kind in {"completed", "completed_with_warning", "failed", "cancelled"}:
                             terminal_kind = kind
                             break
                     elif event:
@@ -947,10 +983,9 @@ class WorkerController:
         if terminal_kind == "cancelled" or latest.get("status") in {"cancelled", "cancel_requested"}:
             if latest.get("status") != "cancelled":
                 self._finalize_cancelled(job_id)
-        elif terminal_kind == "completed" and return_code == 0 and not worker_failed:
-            output_format = fmt_val
+        elif terminal_kind in {"completed", "completed_with_warning"} and return_code == 0 and not worker_failed:
             try:
-                output = latest.get("output_path") or str(transcript_path(source, out_dir, output_format))
+                output = latest.get("output_path") or str(transcript_path(source, out_dir))
             except OSError as exc:
                 message = f"Could not resolve expected output path: {exc}"
                 self.store.update(job_id, status="failed", stage="failed", message=message,
@@ -968,7 +1003,7 @@ class WorkerController:
                                   error=message, finished_at=_now())
                 self._emit(job_id, "failed", {"stage": "failed", "message": message, "error": message})
                 return
-            had_warning = latest.get("status") == "completed_with_warning" or bool(latest.get("error"))
+            had_warning = terminal_kind == "completed_with_warning" or latest.get("status") == "completed_with_warning" or bool(latest.get("error"))
             final_status = "completed_with_warning" if had_warning else "completed"
             final_message = "Completed with warnings" if had_warning else "Completed"
             self.store.update(job_id, status=final_status, stage="completed", progress=1.0,
@@ -1051,7 +1086,6 @@ class BackgroundService:
         LOG_DIR.mkdir(parents=True, exist_ok=True)
         self.store = JobStore(JOBS_DB)
         self.token_store = TokenStore(TOKEN_FILE)
-        self.token_store.migrate_legacy_file()
         self.on_event = on_event or (lambda _event, _payload: None)
         self.worker = WorkerController(self.settings, self.store, self.token_store, self._event)
         self.watcher = FileWatcher(self.settings, self._event)
@@ -1092,6 +1126,10 @@ class BackgroundService:
         if was_enabled:
             self.watcher.start()
 
+    def rescan_watch_dir(self) -> None:
+        """Manually reconcile the watch directory (picks up missed files now)."""
+        self.watcher.rescan()
+
     def add_file(self, path: Path, options: dict = None) -> dict | None:
         row = self.store.create_if_new(path, options)
         if row:
@@ -1105,63 +1143,6 @@ class BackgroundService:
     def clear_audio_cache(self) -> dict:
         """Delete temporary .wav files from completed/failed tasks."""
         return clear_audio_cache(config.CACHE_DIR, self.store)
-
-    def speaker_labels_for_job(self, job_id: str) -> list[str]:
-        """Return labels from the completed merged cache for the rename dialog."""
-        import transcribe
-
-        row = self.store.get(job_id)
-        if not row:
-            return []
-        paths = transcribe.derive_paths(Path(row["source_path"]))
-        segments_path = paths.get("segments_json")
-        if not segments_path or not segments_path.exists():
-            return []
-        payload = transcribe._read_stage_payload(segments_path, "merged", None)
-        if not payload:
-            return []
-        return sorted({
-            str(segment.get("speaker"))
-            for segment in payload["result"]
-            if segment.get("speaker") and segment.get("speaker") != "[unknown]"
-        })
-
-    def speaker_aliases_for_job(self, job_id: str) -> dict[str, str]:
-        """Return remembered display names for a completed merged result."""
-        import transcribe
-
-        row = self.store.get(job_id)
-        if not row:
-            return {}
-        paths = transcribe.derive_paths(Path(row["source_path"]))
-        segments_path = paths.get("segments_json")
-        if not segments_path or not segments_path.exists():
-            return {}
-        payload = transcribe._read_stage_payload(segments_path, "merged", None)
-        if not payload:
-            return {}
-        return transcribe._speaker_aliases_for_segments(payload, payload["result"])
-
-    def rename_speakers(self, job_id: str, mapping: dict[str, str]) -> dict | None:
-        """Regenerate a completed output using speaker display names only."""
-        import transcribe
-
-        row = self.store.get(job_id)
-        if not row or row.get("status") not in TERMINAL_STATUSES or not row.get("output_path"):
-            return None
-        output_path = Path(row["output_path"])
-        transcribe.rename_output(Path(row["source_path"]), output_path, mapping)
-        updated = self.store.update(
-            job_id,
-            message="Speaker names updated",
-            error="",
-        )
-        self._event("renamed", {
-            "job_id": job_id,
-            "output_path": str(output_path),
-            "message": "Speaker names updated",
-        })
-        return updated
 
     def _event(self, event: str, payload: dict) -> None:
         if event == "ready":

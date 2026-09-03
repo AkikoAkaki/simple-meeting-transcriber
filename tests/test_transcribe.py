@@ -312,55 +312,6 @@ def test_stage_cache_rejects_changed_key(tmp_path):
     assert transcribe._read_stage_cache(path, "whisper", "key-b") is None
 
 
-def test_rename_speakers_in_segments_only_changes_display_labels():
-    import transcribe
-
-    segments = [
-        {"start": 0.0, "end": 1.0, "text": "Hello", "speaker": "SPEAKER_00"},
-        {"start": 1.0, "end": 2.0, "text": "World", "speaker": "[unknown]"},
-    ]
-    renamed = transcribe.rename_speakers_in_segments(
-        segments, {"SPEAKER_00": "Alice", "[unknown]": ""})
-
-    assert renamed[0]["speaker"] == "Alice"
-    assert renamed[1]["speaker"] == "[unknown]"
-    assert segments[0]["speaker"] == "SPEAKER_00"
-
-
-def test_rename_output_reuses_merged_cache(tmp_path, monkeypatch):
-    import transcribe
-
-    source = tmp_path / "meeting.mp4"
-    source.write_bytes(b"source")
-    output = tmp_path / "meeting.md"
-    merged_cache = tmp_path / "merged.json"
-    paths = {"segments_json": merged_cache, "wav": tmp_path / "audio.wav"}
-    monkeypatch.setattr(transcribe, "derive_paths", lambda _path: paths)
-    transcribe._write_stage_cache(
-        merged_cache,
-        "merged",
-        "merged-key",
-        [{"start": 0.0, "end": 1.0, "text": "Hello", "speaker": "SPEAKER_00"}],
-        metadata={
-            "source_file": source.name,
-            "total_sec": 1.0,
-            "language": "en",
-            "has_diarization": True,
-        },
-    )
-
-    transcribe.rename_output(source, output, {"SPEAKER_00": "Alice"})
-
-    assert "Alice" in output.read_text(encoding="utf-8")
-    assert "Hello" in output.read_text(encoding="utf-8")
-    payload = transcribe._read_stage_payload(merged_cache, "merged", None)
-    assert payload["speaker_aliases"] == {"SPEAKER_00": "Alice"}
-
-    regenerated = tmp_path / "meeting.txt"
-    transcribe.rename_output(source, regenerated, {})
-    assert regenerated.read_text(encoding="utf-8").strip() == "Hello"
-
-
 def test_server_jobs_reset_max_speakers_and_end_with_terminal_event(tmp_path, monkeypatch, capsys):
     import json
     import transcribe
@@ -399,7 +350,7 @@ def test_server_jobs_reset_max_speakers_and_end_with_terminal_event(tmp_path, mo
 
     base = {
         "input_path": str(source), "output_dir": str(tmp_path),
-        "model": "tiny", "device": "cpu", "language": "auto",
+        "model": "large-v3-turbo", "device": "cpu", "language": "auto",
         "output_format": "md",
     }
     transcribe.run_job_from_json({**base, "max_speakers": 3, "token": "secret"})

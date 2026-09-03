@@ -20,7 +20,7 @@ try:
     from PySide6.QtCore import QObject, QLockFile, Qt, QUrl, Signal
     from PySide6.QtGui import QAction, QColor, QDesktopServices, QIcon, QPainter, QPixmap
     from PySide6.QtWidgets import (
-        QApplication, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFileDialog,
+        QApplication, QCheckBox, QComboBox, QFileDialog,
         QFormLayout, QFrame, QGroupBox, QHBoxLayout, QLabel, QLineEdit, QListWidget,
         QListWidgetItem, QMainWindow, QMenu, QMessageBox, QPlainTextEdit, QProgressBar,
         QPushButton, QScrollArea, QSizePolicy, QSpacerItem, QStyle, QSystemTrayIcon,
@@ -132,9 +132,6 @@ if QT_AVAILABLE:
             self.manual_pipeline = QComboBox()
             self.manual_pipeline.addItems(["Full pipeline", "Transcribe only", "Re-diarize only"])
 
-            self.manual_format = QComboBox()
-            self.manual_format.addItems(["md", "txt"])
-
             self.manual_speakers = QComboBox()
             self.manual_speakers.addItems(["auto", "2", "3", "4", "5"])
 
@@ -147,7 +144,6 @@ if QT_AVAILABLE:
 
             options_form.addRow("Language", self.manual_lang)
             options_form.addRow("Pipeline", self.manual_pipeline)
-            options_form.addRow("Output format", self.manual_format)
             options_form.addRow("Max speakers", self.manual_speakers)
             options_form.addRow("Exact speakers", self.manual_exact_speakers)
             options_form.addRow("Names / terms", self.manual_hotwords)
@@ -221,12 +217,8 @@ if QT_AVAILABLE:
             self.recent_list = QListWidget()
             self.recent_list.setMinimumHeight(170)
             self.recent_list.setMaximumHeight(240)
-            self.recent_list.itemDoubleClicked.connect(lambda _item: self._rename_selected_job())
             recent_layout.addWidget(self.recent_list)
             recent_buttons = QHBoxLayout()
-            rename_speakers = QPushButton("Rename speakers")
-            rename_speakers.clicked.connect(self._rename_selected_job)
-            recent_buttons.addWidget(rename_speakers)
             open_transcripts = QPushButton("Open transcripts folder")
             open_transcripts.clicked.connect(self._open_transcripts)
             recent_buttons.addWidget(open_transcripts)
@@ -240,7 +232,7 @@ if QT_AVAILABLE:
             settings, settings_layout = _card("Advanced settings")
             form = QFormLayout()
             self.model_box = QComboBox()
-            self.model_box.addItems(["large-v3-turbo", "large-v3", "medium", "small", "base", "tiny"])
+            self.model_box.addItems(["large-v3-turbo", "large-v3"])
             self.model_box.setCurrentText(self.app.service.settings.model)
             self.device_box = QComboBox()
             self.device_box.addItems(["auto", "cuda", "cpu"])
@@ -324,7 +316,7 @@ if QT_AVAILABLE:
             options = {
                 "language": self.manual_lang.currentText(),
                 "pipeline": self.manual_pipeline.currentText(),
-                "output_format": self.manual_format.currentText(),
+                "output_format": "md",
                 "max_speakers": self.manual_speakers.currentText(),
                 "num_speakers": self.manual_exact_speakers.currentText(),
                 "hotwords": self.manual_hotwords.toPlainText().strip(),
@@ -365,52 +357,6 @@ if QT_AVAILABLE:
         def _open_logs(self):
             APP_DATA_DIR.joinpath("logs").mkdir(parents=True, exist_ok=True)
             QDesktopServices.openUrl(QUrl.fromLocalFile(str(APP_DATA_DIR / "logs")))
-
-        def _rename_selected_job(self):
-            item = self.recent_list.currentItem()
-            if item is None:
-                QMessageBox.information(self, "Rename speakers", "Select a completed task first.")
-                return
-            job_id = item.data(Qt.ItemDataRole.UserRole)
-            labels = self.app.service.speaker_labels_for_job(job_id)
-            if not labels:
-                QMessageBox.information(
-                    self, "Rename speakers",
-                    "No completed speaker labels are available for this task.",
-                )
-                return
-            aliases = self.app.service.speaker_aliases_for_job(job_id)
-
-            dialog = QDialog(self)
-            dialog.setWindowTitle("Rename speakers")
-            dialog.setMinimumWidth(360)
-            layout = QVBoxLayout(dialog)
-            form = QFormLayout()
-            edits = {}
-            for label in labels:
-                edit = QLineEdit(aliases.get(label, label))
-                form.addRow(label, edit)
-                edits[label] = edit
-            layout.addLayout(form)
-            buttons = QDialogButtonBox(
-                QDialogButtonBox.StandardButton.Ok |
-                QDialogButtonBox.StandardButton.Cancel
-            )
-            buttons.accepted.connect(dialog.accept)
-            buttons.rejected.connect(dialog.reject)
-            layout.addWidget(buttons)
-            if dialog.exec() != QDialog.DialogCode.Accepted:
-                return
-
-            mapping = {label: edit.text().strip() for label, edit in edits.items()}
-            try:
-                updated = self.app.service.rename_speakers(job_id, mapping)
-            except Exception as exc:
-                QMessageBox.warning(self, "Rename speakers failed", str(exc))
-                return
-            if updated:
-                self.append_log("Speaker names updated")
-                self.refresh()
 
         def _get_cache_size_text(self) -> str:
             if hasattr(self.app.service, "get_cache_size"):
