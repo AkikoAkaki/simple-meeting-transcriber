@@ -39,7 +39,7 @@ if (-not (Test-Path $pythonw)) {
 }
 
 # 3. Register in HKCU Run key
-$cmd = "`"$pythonw`" `"$script`""
+$cmd = "`"$pythonw`" `"$script`" --tray-only"
 Set-ItemProperty -Path $regPath -Name $regName -Value $cmd
 
 Write-Host ""

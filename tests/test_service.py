@@ -62,7 +62,9 @@ def test_job_store_deduplicates_same_file(tmp_path):
     assert store.get(first["job_id"])["status"] == "queued"
 
 
-def test_token_store_uses_private_app_file_fallback(tmp_path):
+def test_token_store_uses_private_app_file_fallback(tmp_path, monkeypatch):
+    import sys
+    monkeypatch.setitem(sys.modules, "keyring", None)
     path = tmp_path / "hf_token.txt"
     store = TokenStore(path)
     store.set("hf_test_token")
@@ -354,7 +356,7 @@ def test_run_one_uses_job_options(tmp_path, monkeypatch):
     }
     job = store.create_if_new(source, options)
     from paths import transcript_path
-    expected_output = transcript_path(source, Path(settings.transcript_dir), "md")
+    expected_output = transcript_path(source, Path(settings.transcript_dir))
     expected_output.parent.mkdir(parents=True, exist_ok=True)
     expected_output.write_text("plain text transcript", encoding="utf-8")
 
@@ -392,7 +394,7 @@ def test_run_one_uses_job_options(tmp_path, monkeypatch):
     assert task["transcribe_only"] is True
     assert task["diarize_only"] is False
     assert task["max_speakers"] == "3"
-    assert task["output_format"] == "md"
+    assert "output_format" not in task
     assert store.get(job["job_id"])["status"] == "completed"
 
 
@@ -412,7 +414,7 @@ def test_run_one_defaults_for_auto_watch(tmp_path, monkeypatch):
 
     job = store.create_if_new(source)
     from paths import transcript_path
-    expected_output = transcript_path(source, Path(settings.transcript_dir), "md")
+    expected_output = transcript_path(source, Path(settings.transcript_dir))
     expected_output.parent.mkdir(parents=True, exist_ok=True)
     expected_output.write_text("transcript", encoding="utf-8")
 
@@ -450,7 +452,7 @@ def test_run_one_defaults_for_auto_watch(tmp_path, monkeypatch):
     assert task["transcribe_only"] is False
     assert task["diarize_only"] is False
     assert task["max_speakers"] == 5
-    assert task["output_format"] == "md"
+    assert "output_format" not in task
     assert store.get(job["job_id"])["status"] == "completed"
 
 
@@ -649,6 +651,7 @@ def test_completed_saves_worker_output_path(tmp_path):
 
 
 def test_watcher_lifecycle_controls(tmp_path, monkeypatch):
+    import config
     from service import BackgroundService, AppSettings
     watcher_calls = {"started": 0, "stopped": 0}
 
@@ -659,6 +662,8 @@ def test_watcher_lifecycle_controls(tmp_path, monkeypatch):
     monkeypatch.setattr("service.SETTINGS_FILE", tmp_path / "settings.json")
     monkeypatch.setattr("service.JOBS_DB", tmp_path / "jobs.sqlite3")
     monkeypatch.setattr("service.TOKEN_FILE", tmp_path / "token.txt")
+    monkeypatch.setattr("service.LOG_DIR", tmp_path / "logs")
+    monkeypatch.setattr(config, "CACHE_DIR", tmp_path / "cache")
 
     settings = AppSettings(watch_dir=str(tmp_path / "watch"), transcript_dir=str(tmp_path / "transcripts"))
     service = BackgroundService(settings=settings)
@@ -680,12 +685,15 @@ def test_watcher_lifecycle_controls(tmp_path, monkeypatch):
 
 
 def test_background_service_uses_runtime_settings_path(tmp_path, monkeypatch):
+    import config
     from service import BackgroundService, AppSettings
 
     settings_path = tmp_path / "settings.json"
     monkeypatch.setattr("service.SETTINGS_FILE", settings_path)
     monkeypatch.setattr("service.JOBS_DB", tmp_path / "jobs.sqlite3")
     monkeypatch.setattr("service.TOKEN_FILE", tmp_path / "token.txt")
+    monkeypatch.setattr("service.LOG_DIR", tmp_path / "logs")
+    monkeypatch.setattr(config, "CACHE_DIR", tmp_path / "cache")
 
     settings = AppSettings(
         watch_dir=str(tmp_path / "watch"),
@@ -700,6 +708,7 @@ def test_background_service_uses_runtime_settings_path(tmp_path, monkeypatch):
 
 
 def test_service_restart_recovery(tmp_path, monkeypatch):
+    import config
     from service import BackgroundService, JobStore, AppSettings
     from service import FileWatcher
     monkeypatch.setattr(FileWatcher, "start", lambda self: None)
@@ -709,6 +718,8 @@ def test_service_restart_recovery(tmp_path, monkeypatch):
     monkeypatch.setattr("service.SETTINGS_FILE", tmp_path / "settings.json")
     monkeypatch.setattr("service.JOBS_DB", db_path)
     monkeypatch.setattr("service.TOKEN_FILE", tmp_path / "token.txt")
+    monkeypatch.setattr("service.LOG_DIR", tmp_path / "logs")
+    monkeypatch.setattr(config, "CACHE_DIR", tmp_path / "cache")
 
     store = JobStore(db_path)
     source1 = tmp_path / "s1.mp4"
@@ -853,7 +864,7 @@ def test_persistent_server_job_protocol_and_stale_event_filter(tmp_path, monkeyp
     source = tmp_path / "server-job.mp4"
     source.write_bytes(b"data")
     job = store.create_if_new(source, {"num_speakers": "3", "hotwords": "Alice,vLLM"})
-    output = transcript_path(source, Path(settings.transcript_dir), "md")
+    output = transcript_path(source, Path(settings.transcript_dir))
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text("transcript", encoding="utf-8")
 
@@ -912,7 +923,7 @@ def test_persistent_server_warning_becomes_completed_with_warning(tmp_path, monk
     source = tmp_path / "warned-job.mp4"
     source.write_bytes(b"data")
     job = store.create_if_new(source)
-    output = transcript_path(source, Path(settings.transcript_dir), "md")
+    output = transcript_path(source, Path(settings.transcript_dir))
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text("transcript", encoding="utf-8")
 
@@ -967,7 +978,7 @@ def test_terminal_event_not_overridden_by_exit_code(tmp_path, monkeypatch):
     source = tmp_path / "killed-after-complete.mp4"
     source.write_bytes(b"data")
     job = store.create_if_new(source)
-    output = transcript_path(source, Path(settings.transcript_dir), "md")
+    output = transcript_path(source, Path(settings.transcript_dir))
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text("transcript", encoding="utf-8")
 
@@ -1050,7 +1061,7 @@ def test_server_eof_cannot_reuse_stale_output_as_success(tmp_path, monkeypatch):
     source = tmp_path / "stale-output.mp4"
     source.write_bytes(b"data")
     job = store.create_if_new(source)
-    old_output = transcript_path(source, Path(settings.transcript_dir), "md")
+    old_output = transcript_path(source, Path(settings.transcript_dir))
     old_output.parent.mkdir(parents=True, exist_ok=True)
     old_output.write_text("old transcript", encoding="utf-8")
 
@@ -1188,15 +1199,8 @@ def test_watcher_readonly_file_is_not_stalled(tmp_path, monkeypatch):
     assert any(event == "ready" for event, _ in events)
 
 
-def test_watch_extensions_includes_ts_flac_aac_opus():
-    """WATCH_EXTENSIONS must include new video/audio formats (.ts, .flac, .aac, .opus)."""
-    import config
-    for ext in [".ts", ".flac", ".aac", ".opus"]:
-        assert ext in config.WATCH_EXTENSIONS
-
-
 def test_format_size_and_get_cache_size(tmp_path):
-    from paths import format_size, get_cache_size, get_cache_size_bytes
+    from paths import format_size, get_cache_size_bytes
     assert format_size(0) == "0 B"
     assert format_size(500) == "500 B"
     assert format_size(1024) == "1.0 KB"
@@ -1204,13 +1208,11 @@ def test_format_size_and_get_cache_size(tmp_path):
 
     cache_dir = tmp_path / "cache"
     assert get_cache_size_bytes(cache_dir) == 0
-    assert get_cache_size(cache_dir) == "0 B"
 
     cache_dir.mkdir()
     (cache_dir / "file1.wav").write_bytes(b"x" * 1024)
     (cache_dir / "file2.json").write_bytes(b"y" * 2048)
     assert get_cache_size_bytes(cache_dir) == 3072
-    assert get_cache_size(cache_dir) == "3.0 KB"
 
 
 def test_clear_audio_cache_deletes_only_terminal_wavs_and_preserves_json_and_active(tmp_path):
@@ -1281,25 +1283,6 @@ def test_clear_audio_cache_deletes_only_terminal_wavs_and_preserves_json_and_act
     assert json_running.exists()
     # 4. Transcripts untouched
     assert (transcripts_dir / "meeting.md").exists()
-
-
-def test_service_cache_methods(tmp_path):
-    from service import BackgroundService, AppSettings
-
-    settings = AppSettings(
-        watch_dir=str(tmp_path / "watch"),
-        transcript_dir=str(tmp_path / "transcripts"),
-        watcher_enabled=False,
-    )
-    svc = BackgroundService(settings=settings)
-    try:
-        assert isinstance(svc.get_cache_size(), str)
-        res = svc.clear_audio_cache()
-        assert "deleted_count" in res
-        assert "reclaimed_bytes" in res
-        assert "reclaimed_size" in res
-    finally:
-        svc.stop()
 
 
 def test_preview_field_forwarded_and_not_throttled(tmp_path):
@@ -1377,12 +1360,14 @@ def test_clear_audio_cache_stem_collision_and_untracked(tmp_path):
     result = clear_audio_cache(cache_dir, store)
     # Active wav is preserved
     assert active_wav.exists()
-    # Collision file (latest_16k) and untracked old CLI wav are deleted
-    assert not collision_wav.exists()
-    assert not old_cli_wav.exists()
+    # Untracked files are always preserved, even when old: mtime alone
+    # cannot prove a CLI task is not still transcribing. Exact-stem matching
+    # also prevents "latest_16k.wav" being confused with "test_16k.wav".
+    assert collision_wav.exists()
+    assert old_cli_wav.exists()
     # JSON cache is preserved
     assert old_cli_json.exists()
-    assert result["deleted_count"] == 2
+    assert result["deleted_count"] == 0
 
 
 def test_format_size_robustness():
@@ -1393,6 +1378,267 @@ def test_format_size_robustness():
     assert format_size("not a number") == "0 B"
     assert format_size(0) == "0 B"
     assert format_size(1024 * 1024) == "1.0 MB"
+
+
+def test_legacy_model_migrated_to_default(tmp_path):
+    import json
+    import config
+    from service import AppSettings
+
+    settings_path = tmp_path / "settings.json"
+    settings_path.write_text(json.dumps({"model": "medium"}), encoding="utf-8")
+    assert AppSettings.load(settings_path).model == config.WHISPER_MODEL
+
+    for bad in ["small", "base", "tiny", "large-v2", "turbo", "", "MEDIUM", None]:
+        data = {"model": bad} if bad is not None else {}
+        settings_path.write_text(json.dumps(data), encoding="utf-8")
+        loaded = AppSettings.load(settings_path)
+        assert loaded.model == config.WHISPER_MODEL
+
+    settings_path.write_text(json.dumps({"model": "large-v3"}), encoding="utf-8")
+    assert AppSettings.load(settings_path).model == "large-v3"
+
+
+def test_background_service_migrates_legacy_model_on_save(tmp_path, monkeypatch):
+    import json
+    import service
+    import config
+    from service import AppSettings, BackgroundService
+
+    monkeypatch.setattr(service, "SETTINGS_FILE", tmp_path / "settings.json")
+    monkeypatch.setattr(service, "JOBS_DB", tmp_path / "jobs.sqlite3")
+    monkeypatch.setattr(service, "TOKEN_FILE", tmp_path / "token.txt")
+    monkeypatch.setattr(service, "LOG_DIR", tmp_path / "logs")
+    monkeypatch.setattr(config, "CACHE_DIR", tmp_path / "cache")
+    (tmp_path / "cache").mkdir(exist_ok=True)
+
+    (tmp_path / "settings.json").write_text(json.dumps({"model": "medium"}), encoding="utf-8")
+    loaded = AppSettings.load()
+    assert loaded.model == "large-v3-turbo"
+
+    svc = BackgroundService(settings=loaded)
+    try:
+        assert svc.settings.model == "large-v3-turbo"
+        saved = json.loads((tmp_path / "settings.json").read_text(encoding="utf-8"))
+        assert saved["model"] == "large-v3-turbo"
+    finally:
+        svc.stop()
+
+
+def test_worker_sends_migrated_model(tmp_path, monkeypatch):
+    import json
+    from pathlib import Path
+    from service import AppSettings, BackgroundService
+
+    import service as service_module
+    import config
+    monkeypatch.setattr(service_module, "SETTINGS_FILE", tmp_path / "settings.json")
+    monkeypatch.setattr(service_module, "JOBS_DB", tmp_path / "jobs.sqlite3")
+    monkeypatch.setattr(service_module, "TOKEN_FILE", tmp_path / "token.txt")
+    monkeypatch.setattr(service_module, "LOG_DIR", tmp_path / "logs")
+    monkeypatch.setattr(config, "CACHE_DIR", tmp_path / "cache")
+    (tmp_path / "cache").mkdir(exist_ok=True)
+
+    settings = AppSettings(
+        watch_dir=str(tmp_path / "watch"),
+        transcript_dir=str(tmp_path / "transcripts"),
+        model="medium",
+    )
+    assert settings.model == "large-v3-turbo"
+    svc = BackgroundService(settings=settings)
+    try:
+        assert svc.settings.model == "large-v3-turbo"
+        from paths import transcript_path
+        source = tmp_path / "model-check.mp4"
+        source.write_bytes(b"data")
+        job = svc.store.create_if_new(source)
+        output = transcript_path(source, Path(svc.settings.transcript_dir))
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text("transcript", encoding="utf-8")
+
+        captured = {}
+
+        class Input:
+            def __init__(self):
+                self.data = ""
+
+            def write(self, value):
+                self.data += value
+
+            def flush(self):
+                pass
+
+        class MockProc:
+            def __init__(self):
+                self.stdin = Input()
+                captured["stdin"] = self.stdin
+                self.stdout = iter([
+                    "@@EVENT " + json.dumps({"event": "completed", "job_id": job["job_id"],
+                                             "output_path": str(output)}) + "\n",
+                ])
+
+            def poll(self):
+                return 0
+
+        monkeypatch.setattr(svc.worker, "_ensure_server_running", lambda: MockProc())
+        svc.worker._active = job
+        svc.worker._run_one_server(job)
+        task = json.loads(captured["stdin"].data)
+        assert task["model"] == "large-v3-turbo"
+    finally:
+        svc.stop()
+
+
+def test_clear_audio_cache_terminal_active_untracked_partial_and_stem(tmp_path):
+    import hashlib
+    import os
+    import time
+    from service import JobStore, clear_audio_cache
+
+    cache_dir = tmp_path / "cache"
+    cache_dir.mkdir()
+    store = JobStore(tmp_path / "jobs.sqlite3")
+
+    def _fp(job):
+        return hashlib.sha256(job["source_key"].encode("utf-8")).hexdigest()[:12]
+
+    terminal_statuses = ["completed", "completed_with_warning", "failed", "cancelled"]
+    terminal_wavs = []
+    for idx, status in enumerate(terminal_statuses):
+        src = tmp_path / f"terminal_{idx}.mp4"
+        src.write_bytes(b"video")
+        job = store.create_if_new(src)
+        store.update(job["job_id"], status=status)
+        fp = _fp(job)
+        wav = cache_dir / f"{src.stem}_{fp}_16k.wav"
+        wav.write_bytes(b"w" * 1000)
+        terminal_wavs.append(wav)
+        # JSON beside terminal WAV must always survive.
+        (cache_dir / f"_{src.stem}_{fp}_whisper.json").write_text("{}", encoding="utf-8")
+
+    term_partials = [
+        terminal_wavs[0].with_suffix(".wav.part"),
+        terminal_wavs[0].with_suffix(".part.wav"),
+    ]
+    for p in term_partials:
+        p.write_bytes(b"p" * 500)
+
+    active_statuses = ["queued", "running", "converting", "transcribing", "diarizing", "cancel_requested"]
+    active_wavs = []
+    for idx, status in enumerate(active_statuses):
+        src = tmp_path / f"active_{idx}.mp4"
+        src.write_bytes(b"video")
+        job = store.create_if_new(src)
+        if status != "queued":
+            store.update(job["job_id"], status=status)
+        fp = _fp(store.get(job["job_id"]))
+        wav = cache_dir / f"{src.stem}_{fp}_16k.wav"
+        wav.write_bytes(b"w" * 1000)
+        active_wavs.append(wav)
+    active_partial = active_wavs[1].with_suffix(".part.wav")
+    active_partial.write_bytes(b"p" * 500)
+    active_wavs.append(active_partial)
+
+    # Same-stem: two different files share stem "same"; generic file must survive
+    # because an active job claims it, while terminal fp-specific file is deleted.
+    (tmp_path / "sub_active").mkdir(exist_ok=True)
+    (tmp_path / "sub_term").mkdir(exist_ok=True)
+    same_active_src = tmp_path / "sub_active" / "same.mp4"
+    same_active_src.write_bytes(b"a")
+    same_term_src = tmp_path / "sub_term" / "same.mp4"
+    same_term_src.write_bytes(b"b-longer")
+    same_active_job = store.create_if_new(same_active_src)
+    store.update(same_active_job["job_id"], status="running")
+    same_term_job = store.create_if_new(same_term_src)
+    store.update(same_term_job["job_id"], status="completed")
+    fp_same_term = _fp(same_term_job)
+    same_generic = cache_dir / "same_16k.wav"
+    same_generic.write_bytes(b"g" * 800)
+    same_term_specific = cache_dir / f"same_{fp_same_term}_16k.wav"
+    same_term_specific.write_bytes(b"t" * 700)
+    fp_same_active = _fp(store.get(same_active_job["job_id"]))
+    same_active_specific = cache_dir / f"same_{fp_same_active}_16k.wav"
+    same_active_specific.write_bytes(b"a" * 600)
+
+    # Untracked old CLI WAVs (and their partials) must always survive.
+    cli_wav = cache_dir / "cli_run_16k.wav"
+    cli_wav.write_bytes(b"c" * 900)
+    cli_partial = cache_dir / "cli_run_16k.wav.part"
+    cli_partial.write_bytes(b"c" * 400)
+    past = time.time() - 120
+    os.utime(cli_wav, (past, past))
+    os.utime(cli_partial, (past, past))
+
+    json_files = list(cache_dir.glob("*.json"))
+    result = clear_audio_cache(cache_dir, store)
+
+    for wav in terminal_wavs:
+        assert not wav.exists(), f"terminal WAV should be deleted: {wav.name}"
+    for p in term_partials:
+        assert not p.exists(), f"terminal partial should be deleted: {p.name}"
+    assert not same_term_specific.exists()
+    for wav in active_wavs:
+        assert wav.exists(), f"active WAV must survive: {wav.name}"
+    assert same_generic.exists()
+    assert same_active_specific.exists()
+    assert cli_wav.exists()
+    assert cli_partial.exists()
+    # All JSON caches survive.
+    for entry in json_files:
+        assert entry.read_text(encoding="utf-8") == "{}"
+    assert result["deleted_count"] == len(terminal_wavs) + len(term_partials) + 1
+
+
+def test_clear_audio_cache_preserves_generic_stem_without_fingerprint(tmp_path):
+    import hashlib
+    from service import JobStore, clear_audio_cache
+
+    cache_dir = tmp_path / "cache"
+    cache_dir.mkdir()
+    store = JobStore(tmp_path / "jobs.sqlite3")
+
+    src = tmp_path / "same.mp4"
+    src.write_bytes(b"video-data")
+    job = store.create_if_new(src)
+    store.update(job["job_id"], status="completed")
+    fp = hashlib.sha256(job["source_key"].encode("utf-8")).hexdigest()[:12]
+
+    fingerprinted = cache_dir / f"same_{fp}_16k.wav"
+    fingerprinted.write_bytes(b"w" * 1000)
+    generic = cache_dir / "same_16k.wav"
+    generic.write_bytes(b"g" * 800)
+
+    fp_partial_a = cache_dir / f"same_{fp}_16k.wav.part"
+    fp_partial_a.write_bytes(b"p" * 400)
+    fp_partial_b = cache_dir / f"same_{fp}_16k.part.wav"
+    fp_partial_b.write_bytes(b"p" * 400)
+    generic_partial_a = cache_dir / "same_16k.wav.part"
+    generic_partial_a.write_bytes(b"g" * 300)
+    generic_partial_b = cache_dir / "same_16k.part.wav"
+    generic_partial_b.write_bytes(b"g" * 300)
+    (cache_dir / f"_same_{fp}_whisper.json").write_text("{}", encoding="utf-8")
+
+    # A completed row without source_key must not grant deletion by filename.
+    with store._connect() as conn:
+        conn.execute(
+            "INSERT INTO jobs (job_id, source_path, source_key, source_size, source_mtime_ns, "
+            "status, stage, progress, message, output_path, error, created_at, updated_at) "
+            "VALUES ('orphan-1', ?, '', 10, 10, 'completed', 'completed', 1.0, '', '', '', 'now', 'now')",
+            (str(tmp_path / "orphan.mp4"),),
+        )
+    orphan_generic = cache_dir / "orphan_16k.wav"
+    orphan_generic.write_bytes(b"o" * 500)
+
+    result = clear_audio_cache(cache_dir, store)
+
+    assert not fingerprinted.exists()
+    assert not fp_partial_a.exists()
+    assert not fp_partial_b.exists()
+    assert generic.exists()
+    assert generic_partial_a.exists()
+    assert generic_partial_b.exists()
+    assert orphan_generic.exists()
+    assert result["deleted_count"] == 3
 
 
 

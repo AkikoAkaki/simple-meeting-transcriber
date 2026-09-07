@@ -25,6 +25,16 @@ CACHE_DIR = ROOT_DIR / "cache"
 #   large-v3             → best quality, needs ~6 GB VRAM
 WHISPER_MODEL = "large-v3-turbo"
 
+# Single source of truth for supported Whisper models.
+SUPPORTED_MODELS = ("large-v3-turbo", "large-v3")
+
+
+def normalize_whisper_model(value) -> str:
+    """Map legacy/unsupported model names to the default supported model."""
+    if isinstance(value, str) and value in SUPPORTED_MODELS:
+        return value
+    return WHISPER_MODEL
+
 # Transcription language:
 #   None  → auto-detect (recommended for mixed-language audio)
 #   "en"  → force English
@@ -67,4 +77,3 @@ WATCH_EXTENSIONS = {
     ".mp4", ".m4a", ".mov", ".mkv", ".webm", ".mp3", ".wav",
     ".ts", ".flac", ".aac", ".opus",
 }
-

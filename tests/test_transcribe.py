@@ -337,7 +337,7 @@ def test_server_jobs_reset_max_speakers_and_end_with_terminal_event(tmp_path, mo
     monkeypatch.setattr(
         transcribe,
         "run_diarization",
-        lambda *args, **kwargs: observed.append((transcribe.config.MAX_SPEAKERS, args[-1])) or [],
+        lambda *args, **kwargs: observed.append((transcribe.config.MAX_SPEAKERS, args[-1])) or [{"start": 0.0, "end": 1.0, "speaker": "SPEAKER_00"}],
     )
     monkeypatch.setattr(
         transcribe,
@@ -351,13 +351,14 @@ def test_server_jobs_reset_max_speakers_and_end_with_terminal_event(tmp_path, mo
     base = {
         "input_path": str(source), "output_dir": str(tmp_path),
         "model": "large-v3-turbo", "device": "cpu", "language": "auto",
-        "output_format": "md",
     }
     transcribe.run_job_from_json({**base, "max_speakers": 3, "token": "secret"})
     transcribe.run_job_from_json({**base, "max_speakers": None, "token": ""})
 
     assert observed == [(3, "secret"), (None, "")]
-    assert cleared == [True]
+    # Lifecycle: each job clears previous pyannote before Whisper (2), plus one
+    # extra clear for the empty-token job that skips diarization.
+    assert cleared == [True, True, True]
     lines = [line for line in capsys.readouterr().out.splitlines() if line]
     terminal = json.loads(lines[-1].removeprefix("@@EVENT "))
     assert terminal["event"] == "completed"
@@ -408,7 +409,9 @@ def test_explicit_empty_token_does_not_fall_back_to_previous_source(tmp_path, mo
         "get_hf_token",
         lambda: (_ for _ in ()).throw(AssertionError("explicit empty token must not fall back")),
     )
-    assert transcribe.run_diarization(tmp_path / "audio.wav", tmp_path / "missing.json", "") == []
+    import pytest
+    with pytest.raises(transcribe.TranscriptionError, match="requires a HuggingFace token"):
+        transcribe.run_diarization(tmp_path / "audio.wav", tmp_path / "missing.json", "")
 
 
 def test_get_wav_duration_handles_odd_sized_chunks(tmp_path):
@@ -550,16 +553,16 @@ def test_merge_results_paragraph_fallback_cjk_spacing():
 
 
 def test_whisper_initial_prompt_passed_for_punctuation(tmp_path, monkeypatch):
-    """run_whisper must pass initial_prompt to model.transcribe to guide natural punctuation."""
+    """run_whisper must pass the correct initial_prompt per language (auto -> None)."""
     import json
     from types import SimpleNamespace
     import transcribe
 
-    observed_prompts = []
+    observed = []
 
     class FakeModel:
         def transcribe(self, _path, **kwargs):
-            observed_prompts.append(kwargs.get("initial_prompt"))
+            observed.append((kwargs.get("language"), kwargs.get("initial_prompt")))
             seg = SimpleNamespace(
                 start=0.0, end=1.0, text="测试，标点。",
                 words=[SimpleNamespace(start=0.0, end=1.0, word="测试，标点。")],
@@ -569,25 +572,76 @@ def test_whisper_initial_prompt_passed_for_punctuation(tmp_path, monkeypatch):
     monkeypatch.setattr(transcribe, "_resolve_device", lambda: "cpu")
     monkeypatch.setattr(transcribe, "get_whisper_model", lambda *args: FakeModel())
 
-    # Default / auto-detect (None)
+    # Auto-detect (None) must not inject a Chinese or English prompt.
     transcribe.run_whisper(tmp_path / "audio.wav", tmp_path / "w1.json", None)
-    assert observed_prompts[-1] == "以下是普通话的会议记录，包含完整的标点符号。"
+    assert observed[-1] == (None, None)
+
+    # Explicit "auto" string normalizes the same way.
+    transcribe.run_whisper(tmp_path / "audio.wav", tmp_path / "w1b.json", "auto")
+    assert observed[-1] == (None, None)
+
+    # Chinese forced
+    transcribe.run_whisper(tmp_path / "audio.wav", tmp_path / "w0.json", "zh")
+    assert observed[-1] == ("zh", "以下是普通话的会议记录，包含完整的标点符号。")
 
     # English forced
     transcribe.run_whisper(tmp_path / "audio.wav", tmp_path / "w2.json", "en")
-    assert observed_prompts[-1] == "Here is a transcript of the meeting with complete punctuation."
+    assert observed[-1] == ("en", "Here is a transcript of the meeting with complete punctuation.")
 
     # Japanese forced
     transcribe.run_whisper(tmp_path / "audio.wav", tmp_path / "w3.json", "ja")
-    assert observed_prompts[-1] == "これは会議の書き起こしです。句読点を含めます。"
+    assert observed[-1] == ("ja", "これは会議の書き起こしです。句読点を含めます。")
 
     # Korean forced
     transcribe.run_whisper(tmp_path / "audio.wav", tmp_path / "w4.json", "ko")
-    assert observed_prompts[-1] == "다음은 회의 녹취록이며 완전한 구두점이 포함되어 있습니다."
+    assert observed[-1] == ("ko", "다음은 회의 녹취록이며 완전한 구두점이 포함되어 있습니다.")
 
-    # French forced (should NOT receive Chinese prompt)
+    # Other explicit languages must not receive a wrong-language prompt.
     transcribe.run_whisper(tmp_path / "audio.wav", tmp_path / "w5.json", "fr")
-    assert observed_prompts[-1] == "Here is a transcript of the meeting with complete punctuation."
+    assert observed[-1] == ("fr", None)
+    transcribe.run_whisper(tmp_path / "audio.wav", tmp_path / "w6.json", "de")
+    assert observed[-1] == ("de", None)
+
+
+def test_select_initial_prompt_single_function():
+    import transcribe
+
+    assert transcribe.select_initial_prompt(None) is None
+    assert transcribe.select_initial_prompt("auto") is None
+    assert transcribe.select_initial_prompt("AUTO") is None
+    assert transcribe.select_initial_prompt("zh") == "以下是普通话的会议记录，包含完整的标点符号。"
+    assert transcribe.select_initial_prompt("en") == "Here is a transcript of the meeting with complete punctuation."
+    assert transcribe.select_initial_prompt("ja") == "これは会議の書き起こしです。句読点を含めます。"
+    assert transcribe.select_initial_prompt("ko") == "다음은 회의 녹취록이며 완전한 구두점이 포함되어 있습니다."
+    assert transcribe.select_initial_prompt("fr") is None
+    assert transcribe.select_initial_prompt("de") is None
+
+
+def test_whisper_cache_key_includes_initial_prompt():
+    import transcribe
+
+    base = dict(model_name="large-v3-turbo", device="cpu", language="zh",
+                hotwords="", word_timestamps=True)
+    key_zh = transcribe._whisper_cache_key(**base)
+    key_auto = transcribe._whisper_cache_key(
+        model_name="large-v3-turbo", device="cpu", language=None,
+        hotwords="", word_timestamps=True)
+    # Auto (None prompt) must differ from zh (Chinese prompt): old biased cache misses.
+    assert key_zh != key_auto
+
+    # Same inputs with different explicit prompts must differ.
+    key_a = transcribe._whisper_cache_key(
+        model_name="large-v3-turbo", device="cpu", language="en",
+        hotwords="", word_timestamps=True, initial_prompt="prompt-a")
+    key_b = transcribe._whisper_cache_key(
+        model_name="large-v3-turbo", device="cpu", language="en",
+        hotwords="", word_timestamps=True, initial_prompt="prompt-b")
+    assert key_a != key_b
+
+    # Diarization cache stays reusable (no prompt leaked into it).
+    dia_a = transcribe._diarization_cache_key(None, None)
+    dia_b = transcribe._diarization_cache_key(None, None)
+    assert dia_a == dia_b
 
 
 def test_run_whisper_emits_preview_in_progress_events(tmp_path, monkeypatch):
@@ -625,15 +679,330 @@ def test_run_whisper_emits_preview_in_progress_events(tmp_path, monkeypatch):
     assert any(p.get("preview") == "First transcribed segment" for p in progress_events)
 
 
-def test_whisper_model_sizes_includes_large_v3_turbo():
-    import importlib
-    import config
-    import transcribe
-
-    importlib.reload(config)
-    assert config.WHISPER_MODEL == "large-v3-turbo"
     # Also verify MODEL_SIZES has large-v3-turbo hint
     # (Notice: in run_whisper, MODEL_SIZES is defined or cached)
     # Check that config.py default is large-v3-turbo
 
 
+def test_worker_rejects_unsupported_model(tmp_path):
+    import pytest
+    import transcribe
+
+    source = tmp_path / "m.mp4"
+    source.write_bytes(b"data")
+    with pytest.raises(ValueError, match="Unsupported model"):
+        transcribe.run_job_from_json({
+            "input_path": str(source), "output_dir": str(tmp_path),
+            "model": "medium", "device": "cpu",
+        })
+    with pytest.raises(ValueError, match="Unsupported model"):
+        transcribe.run_job_from_json({
+            "input_path": str(source), "output_dir": str(tmp_path),
+            "model": "tiny", "device": "cpu",
+        })
+
+
+def test_cli_model_choices_come_from_config():
+    import pytest
+    import config
+    import transcribe
+
+    assert list(config.SUPPORTED_MODELS) == ["large-v3-turbo", "large-v3"]
+    parser = transcribe._build_cli_parser()
+    for action in parser._actions:
+        if "--model" in getattr(action, "option_strings", []):
+            assert list(action.choices) == list(config.SUPPORTED_MODELS)
+            break
+    else:
+        raise AssertionError("--model argument missing")
+
+    with pytest.raises(SystemExit):
+        parser.parse_args(["input.mp4", "--model", "medium"])
+    args = parser.parse_args(["input.mp4", "--model", "large-v3-turbo"])
+    assert args.model == "large-v3-turbo"
+    args = parser.parse_args(["input.mp4", "--model", "large-v3"])
+    assert args.model == "large-v3"
+
+
+def test_full_pipeline_model_lifecycle_order(tmp_path, monkeypatch):
+    """Two full pipelines must never hold previous pyannote + current Whisper together."""
+    import transcribe
+
+    calls = []
+
+    def _paths_for(input_path):
+        from pathlib import Path
+        stem = Path(input_path).stem
+        return {
+            "wav": tmp_path / f"{stem}.wav",
+            "whisper_json": tmp_path / f"{stem}_whisper.json",
+            "diarize_json": tmp_path / f"{stem}_diarize.json",
+            "segments_json": tmp_path / f"{stem}_segments.json",
+            "output_md": tmp_path / f"{stem}.md",
+        }
+
+    monkeypatch.setattr(transcribe, "derive_paths", _paths_for)
+    monkeypatch.setattr(transcribe, "convert_to_wav", lambda *_: None)
+    monkeypatch.setattr(transcribe, "_resolve_device", lambda: "cpu")
+    monkeypatch.setattr(transcribe, "get_wav_duration", lambda _: 1.0)
+    monkeypatch.setattr(transcribe, "merge_results",
+                         lambda segs, turns: [{**segs[0], "speaker": "SPEAKER_00"}])
+    monkeypatch.setattr(transcribe, "generate_markdown", lambda *a, **k: "# md")
+    monkeypatch.setattr(transcribe, "clear_diarize_pipeline",
+                         lambda: calls.append("clear_diarize"))
+    monkeypatch.setattr(transcribe, "_release_whisper_before_diarization",
+                         lambda: calls.append("release_whisper"))
+    monkeypatch.setattr(transcribe, "run_whisper",
+                         lambda *a, **k: calls.append("run_whisper") or [{"start": 0.0, "end": 1.0, "text": "hi"}])
+    monkeypatch.setattr(transcribe, "run_diarization",
+                         lambda *a, **k: calls.append("run_diarize") or [{"start": 0.0, "end": 1.0, "speaker": "SPEAKER_00"}])
+
+    s1 = tmp_path / "job1.mp4"
+    s1.write_bytes(b"1")
+    s2 = tmp_path / "job2.mp4"
+    s2.write_bytes(b"2")
+
+    transcribe._run_job_impl(s1, "large-v3-turbo", None, None, None, False, False, "", "tok")
+    transcribe._run_job_impl(s2, "large-v3-turbo", None, None, None, False, False, "", "tok")
+
+    assert calls == [
+        "clear_diarize", "run_whisper", "release_whisper", "run_diarize",
+        "clear_diarize", "run_whisper", "release_whisper", "run_diarize",
+    ]
+    # Second job frees previous pyannote before loading current Whisper,
+    # and frees Whisper before loading pyannote.
+    first_diarize = calls.index("run_diarize")
+    second_clear = calls.index("clear_diarize", first_diarize + 1)
+    second_whisper = calls.index("run_whisper", second_clear + 1)
+    assert first_diarize < second_clear < second_whisper
+
+
+def test_transcribe_only_reuses_whisper(tmp_path, monkeypatch):
+    """Consecutive transcribe-only jobs with the same model load Whisper once."""
+    import sys
+    import transcribe
+
+    loads = []
+
+    class FakeWhisper:
+        def __init__(self, *args, **kwargs):
+            loads.append((args, kwargs))
+
+        def transcribe(self, *_a, **_k):
+            from types import SimpleNamespace
+            seg = SimpleNamespace(start=0.0, end=1.0, text="hi",
+                                  words=[SimpleNamespace(start=0.0, end=1.0, word="hi")])
+            return iter([seg]), SimpleNamespace(duration=1.0, language="en", language_probability=1.0)
+
+    mod = type(sys)("faster_whisper")
+    mod.WhisperModel = FakeWhisper
+    monkeypatch.setitem(sys.modules, "faster_whisper", mod)
+    monkeypatch.setattr(transcribe, "_whisper_model", None)
+    monkeypatch.setattr(transcribe, "_whisper_model_params", None)
+    monkeypatch.setattr(transcribe, "_resolve_device", lambda: "cpu")
+    monkeypatch.setattr(transcribe, "convert_to_wav", lambda *_: None)
+    monkeypatch.setattr(transcribe, "get_wav_duration", lambda _: 1.0)
+    monkeypatch.setattr(transcribe, "merge_results",
+                         lambda segs, turns: [{**segs[0], "speaker": "[unknown]"}])
+    monkeypatch.setattr(transcribe, "generate_markdown", lambda *a, **k: "# md")
+    # Ensure no leftover pyannote interferes.
+    monkeypatch.setattr(transcribe, "clear_diarize_pipeline", lambda: None)
+    real_release_calls = []
+
+    def _counting_release():
+        real_release_calls.append(True)
+        transcribe.clear_whisper_model()
+        try:
+            import torch
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        except ImportError:
+            pass
+    monkeypatch.setattr(transcribe, "_release_whisper_before_diarization", _counting_release)
+
+    s1 = tmp_path / "t1.mp4"
+    s1.write_bytes(b"1")
+    s2 = tmp_path / "t2.mp4"
+    s2.write_bytes(b"2")
+
+    def _paths_for(input_path):
+        from pathlib import Path
+        stem = Path(input_path).stem
+        return {
+            "wav": tmp_path / f"{stem}.wav",
+            "whisper_json": tmp_path / f"{stem}_whisper.json",
+            "diarize_json": tmp_path / f"{stem}_diarize.json",
+            "segments_json": tmp_path / f"{stem}_segments.json",
+            "output_md": tmp_path / f"{stem}.md",
+        }
+    monkeypatch.setattr(transcribe, "derive_paths", _paths_for)
+
+    transcribe._run_job_impl(s1, "large-v3-turbo", None, None, None, True, False, "", "")
+    transcribe._run_job_impl(s2, "large-v3-turbo", None, None, None, True, False, "", "")
+    assert len(loads) == 1, f"expected single Whisper load, got {len(loads)}"
+    assert real_release_calls == []
+
+
+def test_diarize_only_does_not_load_whisper(tmp_path, monkeypatch):
+    import transcribe
+
+    def _fail_load(*_a, **_k):
+        raise AssertionError("diarize-only must not load Whisper")
+
+    monkeypatch.setattr(transcribe, "get_whisper_model", _fail_load)
+    monkeypatch.setattr(transcribe, "derive_paths", lambda _p: {
+        "wav": tmp_path / "w.wav",
+        "whisper_json": tmp_path / "w_whisper.json",
+        "diarize_json": tmp_path / "w_diarize.json",
+        "segments_json": tmp_path / "w_segments.json",
+        "output_md": tmp_path / "w.md",
+    })
+    monkeypatch.setattr(transcribe, "convert_to_wav", lambda *_: None)
+    monkeypatch.setattr(transcribe, "_resolve_device", lambda: "cpu")
+    monkeypatch.setattr(transcribe, "_read_stage_cache",
+                         lambda *_a, **_k: [{"start": 0.0, "end": 1.0, "text": "hi"}])
+    monkeypatch.setattr(transcribe, "run_diarization", lambda *_a, **_k: [{"start": 0.0, "end": 1.0, "speaker": "SPEAKER_00"}])
+    monkeypatch.setattr(transcribe, "merge_results",
+                         lambda segs, turns: [{**segs[0], "speaker": "[unknown]"}])
+    monkeypatch.setattr(transcribe, "get_wav_duration", lambda _: 1.0)
+    monkeypatch.setattr(transcribe, "generate_markdown", lambda *a, **k: "# md")
+    monkeypatch.setattr(transcribe, "clear_diarize_pipeline", lambda: None)
+    monkeypatch.setattr(transcribe, "_release_whisper_before_diarization", lambda: None)
+
+    src = tmp_path / "src.mp4"
+    src.write_bytes(b"x")
+    transcribe._run_job_impl(src, "large-v3-turbo", None, None, None, False, True, "", "tok")
+
+
+def test_whisper_failure_releases_model(tmp_path, monkeypatch):
+    import pytest
+    import transcribe
+
+    released = []
+    monkeypatch.setattr(transcribe, "derive_paths", lambda _p: {
+        "wav": tmp_path / "w.wav",
+        "whisper_json": tmp_path / "w_whisper.json",
+        "diarize_json": tmp_path / "w_diarize.json",
+        "segments_json": tmp_path / "w_segments.json",
+        "output_md": tmp_path / "w.md",
+    })
+    monkeypatch.setattr(transcribe, "convert_to_wav", lambda *_: None)
+    monkeypatch.setattr(transcribe, "_resolve_device", lambda: "cpu")
+    monkeypatch.setattr(transcribe, "clear_diarize_pipeline", lambda: None)
+    monkeypatch.setattr(transcribe, "_release_whisper_before_diarization",
+                         lambda: released.append(True))
+
+    def _boom(*_a, **_k):
+        raise RuntimeError("whisper exploded")
+
+    monkeypatch.setattr(transcribe, "run_whisper", _boom)
+    src = tmp_path / "fail.mp4"
+    src.write_bytes(b"x")
+    with pytest.raises(RuntimeError):
+        transcribe._run_job_impl(src, "large-v3-turbo", None, None, None, False, False, "", "tok")
+    assert released != []
+
+
+
+
+def _stub_job_audio(tmp_path, monkeypatch):
+    import transcribe
+
+    source = tmp_path / "lecture.m4a"
+    source.write_bytes(b"audio")
+    monkeypatch.setattr(transcribe.config, "CACHE_DIR", tmp_path / "cache")
+    monkeypatch.setattr(transcribe.config, "TRANSCRIPT_DIR", tmp_path / "transcripts")
+    monkeypatch.setattr(transcribe, "convert_to_wav", lambda *_: None)
+    monkeypatch.setattr(transcribe, "get_wav_duration", lambda _: 2.0)
+    monkeypatch.setattr(transcribe, "_resolve_device", lambda: "cpu")
+    monkeypatch.setattr(transcribe, "clear_diarize_pipeline", lambda: None)
+    monkeypatch.setattr(transcribe, "_release_whisper_before_diarization", lambda: None)
+
+    def recognize(_wav, cache, _language, _hotwords, key):
+        segments = [{"start": 0.0, "end": 2.0, "text": "Lecture content."}]
+        transcribe._write_stage_cache(cache, "whisper", key, segments)
+        return segments
+
+    monkeypatch.setattr(transcribe, "run_whisper", recognize)
+    return source
+
+
+def test_cli_and_server_produce_identical_transcripts(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    import transcribe
+
+    source = _stub_job_audio(tmp_path, monkeypatch)
+    class Pipeline:
+        def __call__(self, *_args, **_kwargs):
+            return SimpleNamespace(itertracks=lambda **_: iter([
+                (SimpleNamespace(start=0.0, end=2.0), None, "SPEAKER_00")]))
+
+    monkeypatch.setattr(transcribe, "get_diarize_pipeline", lambda *_: Pipeline())
+    monkeypatch.setattr(transcribe, "get_hf_token", lambda: "test-token")
+    monkeypatch.setattr(sys, "argv", ["transcribe.py", str(source), "--device", "cpu", "--language", "en"])
+    transcribe._main()
+    output = transcribe.derive_paths(source)["output_md"]
+    cli_text = output.read_text(encoding="utf-8")
+    output.unlink()
+    transcribe.run_job_from_json({
+        "input_path": str(source), "output_dir": str(output.parent),
+        "device": "cpu", "language": "en", "token": "test-token",
+    })
+    assert output.read_text(encoding="utf-8") == cli_text
+    assert "SPEAKER_00" in cli_text
+    assert "Lecture content." in cli_text
+
+
+import pytest
+
+
+@pytest.mark.parametrize("entry", ["cli", "server"])
+@pytest.mark.parametrize("failure", ["missing_token", "model_load", "inference", "empty"])
+def test_diarization_failure_is_terminal_and_preserves_whisper_cache(
+    tmp_path, monkeypatch, capsys, entry, failure,
+):
+    import io
+    import json
+    from types import SimpleNamespace
+    import transcribe
+
+    source = _stub_job_audio(tmp_path, monkeypatch)
+    token = "" if failure == "missing_token" else "test-token"
+    monkeypatch.setattr(transcribe, "get_hf_token", lambda: token)
+
+    class Pipeline:
+        def __call__(self, *_args, **_kwargs):
+            if failure == "inference":
+                raise RuntimeError("diarization inference failed")
+            return SimpleNamespace(itertracks=lambda **_: iter([]))
+
+    def load(*_args):
+        if failure == "model_load":
+            raise RuntimeError("diarization model failed to load")
+        return Pipeline()
+
+    monkeypatch.setattr(transcribe, "get_diarize_pipeline", load)
+    paths = transcribe.derive_paths(source)
+    # A failed rerun must not replace an existing archived transcript.
+    paths["output_md"].write_text("Archived transcript", encoding="utf-8")
+    if entry == "cli":
+        monkeypatch.setattr(sys, "argv", ["transcribe.py", str(source), "--device", "cpu"])
+        with pytest.raises(SystemExit) as exc:
+            transcribe.main()
+        assert exc.value.code == 1
+    else:
+        job = {"command": "transcribe", "job_id": "failure-job",
+               "input_path": str(source), "output_dir": str(paths["output_md"].parent),
+               "device": "cpu", "token": token}
+        monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps(job) + "\n"))
+        transcribe.run_server()
+
+    events = [json.loads(line.removeprefix("@@EVENT "))
+              for line in capsys.readouterr().out.splitlines() if line.startswith("@@EVENT ")]
+    assert events[-1]["event"] == "failed"
+    assert not any(e["event"] in {"completed", "completed_with_warning"} for e in events)
+    if entry == "server":
+        assert events[-1]["job_id"] == "failure-job"
+    assert paths["output_md"].read_text(encoding="utf-8") == "Archived transcript"
+    assert paths["whisper_json"].is_file()
+    assert not paths["diarize_json"].exists()

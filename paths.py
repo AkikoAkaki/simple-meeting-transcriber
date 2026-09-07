@@ -20,7 +20,7 @@ def source_fingerprint(input_path: Path) -> str:
     return hashlib.sha256(identity.encode("utf-8")).hexdigest()[:12]
 
 
-def transcript_path(input_path: Path, output_dir: Path, output_format: str = "md", fingerprint: str | None = None) -> Path:
+def transcript_path(input_path: Path, output_dir: Path, fingerprint: str | None = None) -> Path:
     """Return the output path used by both the worker and its controller (Markdown only)."""
     input_path = Path(input_path)
     fp = fingerprint or source_fingerprint(input_path)
@@ -47,14 +47,8 @@ def format_size(num_bytes: int | float | None) -> str:
 
 
 
-def get_cache_size_bytes(cache_dir: Path | str | None = None) -> int:
+def get_cache_size_bytes(cache_dir: Path | str) -> int:
     """Calculate the total size in bytes of all files in the cache directory."""
-    if cache_dir is None:
-        try:
-            import config
-            cache_dir = config.CACHE_DIR
-        except Exception:
-            return 0
     path = Path(cache_dir)
     if not path.is_dir():
         return 0
@@ -69,16 +63,3 @@ def get_cache_size_bytes(cache_dir: Path | str | None = None) -> int:
     except OSError:
         pass
     return total
-
-
-def get_cache_size(cache_dir: Path | str | None = None) -> str:
-    """Return human-readable cache size (e.g. '128.5 MB')."""
-    return format_size(get_cache_size_bytes(cache_dir))
-
-
-def clear_audio_cache(cache_dir: Path | str | None = None, store=None) -> dict:
-    """Clean up intermediate audio files (.wav) from completed or failed jobs."""
-    from service import clear_audio_cache as _clear
-    return _clear(cache_dir=cache_dir, store=store)
-
-

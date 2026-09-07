@@ -39,7 +39,7 @@ if QT_AVAILABLE:
 
     def _make_icon(color: str = "#3b82f6") -> QIcon:
         icon = QIcon()
-        for s in (32, 64, 128):
+        for s in (16, 24, 32, 48, 64, 128):
             pixmap = QPixmap(s, s)
             pixmap.fill(Qt.GlobalColor.transparent)
             painter = QPainter(pixmap)
@@ -232,7 +232,7 @@ if QT_AVAILABLE:
             settings, settings_layout = _card("Advanced settings")
             form = QFormLayout()
             self.model_box = QComboBox()
-            self.model_box.addItems(["large-v3-turbo", "large-v3"])
+            self.model_box.addItems(list(config.SUPPORTED_MODELS))
             self.model_box.setCurrentText(self.app.service.settings.model)
             self.device_box = QComboBox()
             self.device_box.addItems(["auto", "cuda", "cpu"])
@@ -243,7 +243,7 @@ if QT_AVAILABLE:
             token_row = QHBoxLayout()
             self.token_edit = QLineEdit()
             self.token_edit.setEchoMode(QLineEdit.EchoMode.Password)
-            self.token_edit.setPlaceholderText("HuggingFace token (optional for transcription-only)")
+            self.token_edit.setPlaceholderText("HuggingFace token (required for speaker diarization)")
             self.token_edit.setText(self.app.service.token_store.get())
             token_row.addWidget(self.token_edit, 1)
             save_token = QPushButton("Save token")
@@ -260,13 +260,11 @@ if QT_AVAILABLE:
             cache_row = QHBoxLayout()
             self.cache_size_label = QLabel()
             self.cache_size_label.setObjectName("muted")
-            self.cache_label = self.cache_size_label
             cache_row.addWidget(self.cache_size_label)
             cache_row.addStretch()
             self.clear_cache_btn = QPushButton("Clear Audio Cache")
             self.clear_cache_btn.setObjectName("clearCacheButton")
             self.clear_cache_btn.clicked.connect(self._clear_audio_cache)
-            self.clear_cache_button = self.clear_cache_btn
             cache_row.addWidget(self.clear_cache_btn)
             settings_layout.addLayout(cache_row)
 
@@ -316,7 +314,6 @@ if QT_AVAILABLE:
             options = {
                 "language": self.manual_lang.currentText(),
                 "pipeline": self.manual_pipeline.currentText(),
-                "output_format": "md",
                 "max_speakers": self.manual_speakers.currentText(),
                 "num_speakers": self.manual_exact_speakers.currentText(),
                 "hotwords": self.manual_hotwords.toPlainText().strip(),
@@ -341,7 +338,7 @@ if QT_AVAILABLE:
         def _save_token(self):
             token = self.token_edit.text().strip()
             self.app.service.token_store.set(token)
-            self.token_status.setText("Token saved. It will be passed to the next worker.") if token else self.token_status.setText("Token cleared; diarization will be skipped.")
+            self.token_status.setText("Token saved. It will be passed to the next worker.") if token else self.token_status.setText("Token cleared; speaker diarization requires a token.")
 
         def _save_settings(self):
             self.app.service.settings.model = self.model_box.currentText()
@@ -358,20 +355,8 @@ if QT_AVAILABLE:
             APP_DATA_DIR.joinpath("logs").mkdir(parents=True, exist_ok=True)
             QDesktopServices.openUrl(QUrl.fromLocalFile(str(APP_DATA_DIR / "logs")))
 
-        def _get_cache_size_text(self) -> str:
-            if hasattr(self.app.service, "get_cache_size"):
-                try:
-                    return self.app.service.get_cache_size()
-                except Exception:
-                    pass
-            from paths import get_cache_size
-            try:
-                return get_cache_size()
-            except Exception:
-                return "0 B"
-
         def _update_cache_display(self):
-            size_str = self._get_cache_size_text()
+            size_str = self.app.service.get_cache_size()
             self.cache_size_label.setText(f"Cache usage: {size_str}")
 
         def _clear_audio_cache(self):
@@ -386,11 +371,7 @@ if QT_AVAILABLE:
             )
             if reply != QMessageBox.StandardButton.Yes:
                 return
-            if hasattr(self.app.service, "clear_audio_cache"):
-                result = self.app.service.clear_audio_cache()
-            else:
-                from service import clear_audio_cache
-                result = clear_audio_cache()
+            result = self.app.service.clear_audio_cache()
             count = result.get("deleted_count", 0)
             size = result.get("reclaimed_size", "0 B")
             self.append_log(f"Audio cache cleared: {count} file(s) removed ({size} reclaimed)")
@@ -443,8 +424,8 @@ if QT_AVAILABLE:
                 self.elapsed.setText("")
                 self.cancel_button.setVisible(False)
                 self.preview_label.setText("")
-            self._update_cache_display()
             if update_recent:
+                self._update_cache_display()
                 self.refresh_recent_list()
             watcher = "Watching" if settings.watcher_enabled else "Paused"
             self.watch_detail.setText(f"{watcher} · new files only · one worker at a time")
@@ -550,10 +531,24 @@ if QT_AVAILABLE:
             self._update_tooltip()
 
         def show_dashboard(self):
-            self.dashboard.refresh()
-            self.dashboard.show()
+            try:
+                self.dashboard.refresh()
+            except Exception:
+                pass
+            if self.dashboard.isMinimized():
+                self.dashboard.showNormal()
+            else:
+                self.dashboard.show()
             self.dashboard.raise_()
             self.dashboard.activateWindow()
+            if sys.platform == "win32":
+                try:
+                    import ctypes
+                    hwnd = int(self.dashboard.winId())
+                    ctypes.windll.user32.ShowWindow(hwnd, 9)  # SW_RESTORE
+                    ctypes.windll.user32.SetForegroundWindow(hwnd)
+                except Exception:
+                    pass
 
         def _from_service(self, event: str, payload: dict):
             self.bridge.event_received.emit(event, payload)
@@ -628,6 +623,15 @@ def main() -> int:
     if not QT_AVAILABLE:
         print("PySide6 is required for the tray dashboard. Install with: pip install PySide6", flush=True)
         return 1
+    if sys.platform == "win32":
+        try:
+            import ctypes
+            user32 = ctypes.windll.user32
+            hDesk = user32.OpenDesktopW("Default", 0, False, 0x01FF)
+            if hDesk:
+                user32.SetThreadDesktop(hDesk)
+        except Exception:
+            pass
     app = QApplication(sys.argv)
     app.setQuitOnLastWindowClosed(False)
     controller = TrayApp(app)
@@ -635,6 +639,8 @@ def main() -> int:
         QMessageBox.information(None, "Already running", "Simple Video Transcriber is already running in the system tray.")
         return 0
     controller.start()
+    if "--tray-only" not in sys.argv and "--silent" not in sys.argv:
+        controller.show_dashboard()
     return app.exec()
 
 

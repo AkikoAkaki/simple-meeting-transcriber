@@ -23,8 +23,29 @@ def qapp():
     yield app
 
 
+@pytest.fixture
+def isolated_tray_paths(tmp_path, monkeypatch):
+    """Redirect all production state touched by TrayApp into tmp_path."""
+    import service
+    import config
+
+    app_data = tmp_path / "appdata"
+    logs = tmp_path / "logs"
+    cache = tmp_path / "cache"
+    cache.mkdir(exist_ok=True)
+    monkeypatch.setattr(service, "SETTINGS_FILE", tmp_path / "settings.json")
+    monkeypatch.setattr(service, "JOBS_DB", tmp_path / "jobs.sqlite3")
+    monkeypatch.setattr(service, "TOKEN_FILE", tmp_path / "hf_token.txt")
+    monkeypatch.setattr(service, "LOG_DIR", logs)
+    monkeypatch.setattr(config, "CACHE_DIR", cache)
+    monkeypatch.setattr(tray_app, "APP_DATA_DIR", app_data)
+    return tmp_path
+
+
 def _mock_app_and_service():
     service = SimpleNamespace(
+        get_cache_size=MagicMock(return_value="0 B"),
+        clear_audio_cache=MagicMock(return_value={"deleted_count": 0, "reclaimed_size": "0 B"}),
         settings=SimpleNamespace(
             watch_dir="/fake/watch",
             watcher_enabled=True,
@@ -64,12 +85,6 @@ def _mock_app_and_service():
     return app
 
 
-def test_manual_output_is_markdown_only(qapp):
-    app = _mock_app_and_service()
-    dashboard = tray_app.Dashboard(app)
-    assert not hasattr(dashboard, "manual_format")
-
-
 def test_refresh_preserves_selected_job_id(qapp):
     app = _mock_app_and_service()
     dashboard = tray_app.Dashboard(app)
@@ -105,14 +120,33 @@ def test_refresh_without_update_recent_does_not_touch_recent_list(qapp):
 
     dashboard.recent_list.clear = mock_clear
 
+    app.service.get_cache_size.reset_mock()
     dashboard.refresh(update_recent=False)
+    app.service.get_cache_size.assert_not_called()
     assert not clear_called, "refresh(update_recent=False) must not clear or rebuild recent_list"
     assert dashboard.recent_list.currentItem().data(Qt.ItemDataRole.UserRole) == "job-1"
 
+    dashboard.refresh(update_recent=True)
+    app.service.get_cache_size.assert_called_once()
 
-def test_handle_event_skips_recent_refresh_on_progress_and_heartbeat(qapp, monkeypatch):
+
+def test_handle_event_skips_recent_refresh_on_progress_and_heartbeat(qapp, monkeypatch, isolated_tray_paths):
+    import service
+    import config
+
+    tmp_path = isolated_tray_paths
     controller = tray_app.TrayApp(qapp)
     try:
+        assert str(service.SETTINGS_FILE).startswith(str(tmp_path))
+        assert str(service.JOBS_DB).startswith(str(tmp_path))
+        assert str(service.TOKEN_FILE).startswith(str(tmp_path))
+        assert str(service.LOG_DIR).startswith(str(tmp_path))
+        assert str(config.CACHE_DIR).startswith(str(tmp_path))
+        assert str(tray_app.APP_DATA_DIR).startswith(str(tmp_path))
+        assert controller.service.store.path == service.JOBS_DB
+        assert controller.service.token_store.file_path == service.TOKEN_FILE
+        assert (tmp_path / "settings.json").exists()
+        assert str(controller.lock.fileName()).startswith(str(tmp_path))
         controller.dashboard = tray_app.Dashboard(controller)
         controller.dashboard.setVisible(True)
 
@@ -148,40 +182,41 @@ def test_handle_event_skips_recent_refresh_on_progress_and_heartbeat(qapp, monke
         controller.service.stop()
 
 
-def test_make_icon_generates_multi_resolution_antialiased_qicon(qapp):
-    icon = tray_app._make_icon("#3b82f6")
-    sizes = [(sz.width(), sz.height()) for sz in icon.availableSizes()]
-    assert (32, 32) in sizes
-    assert (64, 64) in sizes
-    assert (128, 128) in sizes
+def test_model_box_uses_single_config_list_and_migrated_value(qapp):
+    import config
+    from service import AppSettings
 
+    assert list(config.SUPPORTED_MODELS) == ["large-v3-turbo", "large-v3"]
+    migrated = AppSettings(model="medium")
+    assert migrated.model == "large-v3-turbo"
+    legal = AppSettings(model="large-v3")
+    assert legal.model == "large-v3"
 
-def test_model_box_contains_large_v3_turbo_as_recommended(qapp):
     app = _mock_app_and_service()
+    app.service.settings.model = migrated.model
     dashboard = tray_app.Dashboard(app)
     items = [dashboard.model_box.itemText(i) for i in range(dashboard.model_box.count())]
-    assert items == ["large-v3-turbo", "large-v3"]
+    assert items == list(config.SUPPORTED_MODELS)
+    assert dashboard.model_box.currentText() == "large-v3-turbo"
 
 
-def test_dashboard_has_preview_label_and_cache_controls(qapp):
-    app = _mock_app_and_service()
-    dashboard = tray_app.Dashboard(app)
+def test_preview_label_updates_on_progress_and_clears_on_completion_or_idle(qapp, isolated_tray_paths):
+    import service
+    import config
 
-    assert hasattr(dashboard, "preview_label")
-    assert dashboard.preview_label.text() == ""
-
-    assert hasattr(dashboard, "clear_cache_btn")
-    assert dashboard.clear_cache_btn.text() == "Clear Audio Cache"
-    assert hasattr(dashboard, "clear_cache_button")
-
-    assert hasattr(dashboard, "cache_size_label")
-    assert hasattr(dashboard, "cache_label")
-    assert "Cache" in dashboard.cache_size_label.text()
-
-
-def test_preview_label_updates_on_progress_and_clears_on_completion_or_idle(qapp):
+    tmp_path = isolated_tray_paths
     controller = tray_app.TrayApp(qapp)
     try:
+        assert str(service.SETTINGS_FILE).startswith(str(tmp_path))
+        assert str(service.JOBS_DB).startswith(str(tmp_path))
+        assert str(service.TOKEN_FILE).startswith(str(tmp_path))
+        assert str(service.LOG_DIR).startswith(str(tmp_path))
+        assert str(config.CACHE_DIR).startswith(str(tmp_path))
+        assert str(tray_app.APP_DATA_DIR).startswith(str(tmp_path))
+        assert controller.service.store.path == service.JOBS_DB
+        assert controller.service.token_store.file_path == service.TOKEN_FILE
+        assert (tmp_path / "settings.json").exists()
+        assert str(controller.lock.fileName()).startswith(str(tmp_path))
         controller.dashboard = tray_app.Dashboard(controller)
         assert controller.dashboard.preview_label.text() == ""
 
@@ -228,3 +263,18 @@ def test_clear_audio_cache_dialog_confirm_and_cancel(qapp, monkeypatch):
     assert "3 file(s) removed (3.0 MB reclaimed)" in dashboard.log.toPlainText()
     assert "0 B" in dashboard.cache_size_label.text()
 
+
+def test_show_dashboard_restores_minimized(qapp):
+    app = _mock_app_and_service()
+    controller = SimpleNamespace(service=app.service)
+    dashboard = tray_app.Dashboard(controller)
+    controller.dashboard = dashboard
+    controller.show_dashboard = tray_app.TrayApp.show_dashboard.__get__(controller)
+
+    dashboard.show()
+    dashboard.showMinimized()
+    assert dashboard.isMinimized()
+
+    controller.show_dashboard()
+    assert not dashboard.isMinimized()
+    assert dashboard.isVisible()

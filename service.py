@@ -26,7 +26,7 @@ from watchdog.events import FileSystemEventHandler
 from watchdog.observers import Observer
 
 import config
-from paths import transcript_path, format_size, get_cache_size, get_cache_size_bytes
+from paths import transcript_path, format_size, get_cache_size_bytes
 
 
 APP_DATA_DIR = Path(os.environ.get("LOCALAPPDATA", Path.home() / ".local")) / "SimpleVideoTranscriber"
@@ -107,10 +107,16 @@ def clear_audio_cache(
     cache_dir: Path | str | None = None,
     store: JobStore | None = None,
 ) -> dict:
-    """Delete temporary .wav files produced by completed or failed tasks.
+    """Delete only WAVs uniquely linked to terminal jobs via source fingerprint.
 
     Strictly preserves .json caches (whisper, diarization, segments) and never touches
-    the transcripts directory. Never deletes .wav files belonging to active jobs.
+    the transcripts directory. Never deletes WAVs belonging to active jobs
+    (queued/running/converting/transcribing/diarizing/cancel_requested).
+    Untracked WAVs (e.g. CLI runs) are always preserved: mtime alone cannot
+    prove a file is unused because a CLI task may still be transcribing.
+    Legacy `<stem>_16k.wav` names without a fingerprint are never trusted and
+    are always preserved: they cannot distinguish a terminal job's old WAV
+    from an untracked CLI WAV with the same stem.
     """
     if cache_dir is None:
         cache_dir = config.CACHE_DIR
@@ -134,16 +140,18 @@ def clear_audio_cache(
             for r in rows:
                 status = r["status"]
                 src_path = Path(r["source_path"])
-                key = r["source_key"] if "source_key" in r.keys() else ""
-                fp = hashlib.sha256(key.encode("utf-8")).hexdigest()[:12] if key else ""
-                stems = set()
-                if fp:
-                    stems.add(f"{src_path.stem}_{fp}_16k")
-                stems.add(f"{src_path.stem}_16k")
+                try:
+                    key = r["source_key"] if "source_key" in r.keys() else ""
+                except Exception:
+                    key = ""
+                if not key:
+                    continue
+                fp = hashlib.sha256(key.encode("utf-8")).hexdigest()[:12]
+                stem = f"{src_path.stem}_{fp}_16k"
                 if status in ACTIVE_STATUSES or status == "cancel_requested":
-                    active_wav_stems.update(stems)
+                    active_wav_stems.add(stem)
                 elif status in TERMINAL_STATUSES:
-                    terminal_wav_stems.update(stems)
+                    terminal_wav_stems.add(stem)
         except Exception:
             pass
 
@@ -181,14 +189,10 @@ def clear_audio_cache(
         if base in active_wav_stems:
             continue
 
-        # If recorded in terminal jobs, delete immediately.
-        # Otherwise, delete only if not modified in the last 15 seconds (avoids deleting in-flight CLI runs).
+        # Only WAVs explicitly associated with terminal jobs may be deleted.
+        # Untracked files (including old CLI WAVs) are always preserved.
         if base not in terminal_wav_stems:
-            try:
-                if time.time() - item.stat().st_mtime < 15:
-                    continue
-            except OSError:
-                continue
+            continue
 
         try:
             size = item.stat().st_size
@@ -216,12 +220,14 @@ class AppSettings:
     device: str = config.DEVICE
     language: str | None = config.LANGUAGE
     max_speakers: int | None = config.MAX_SPEAKERS
-    num_speakers: int | None = getattr(config, "NUM_SPEAKERS", None)
-    hotwords: str = getattr(config, "HOTWORDS", "")
+    num_speakers: int | None = config.NUM_SPEAKERS
+    hotwords: str = config.HOTWORDS
     stable_seconds: int = 15
     min_file_size_kb: int = config.MIN_FILE_SIZE_KB
     watcher_enabled: bool = True
-    start_with_windows: bool = True
+
+    def __post_init__(self) -> None:
+        self.model = config.normalize_whisper_model(self.model)
 
     @classmethod
     def load(cls, path: Path | None = None) -> "AppSettings":
@@ -301,9 +307,9 @@ class TokenStore:
 
 
 class JobStore:
-    """Small SQLite-backed job and event store.
+    """Small SQLite-backed job store.
 
-    Each operation opens its own connection, so callbacks from watchdog and
+    Each thread uses its own connection, so callbacks from watchdog and
     worker threads do not share a SQLite connection.
     """
 
@@ -345,15 +351,7 @@ class JobStore:
                     retry_count INTEGER NOT NULL DEFAULT 0,
                     options_json TEXT DEFAULT '{}'
                 );
-                CREATE TABLE IF NOT EXISTS job_events (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    job_id TEXT NOT NULL,
-                    timestamp TEXT NOT NULL,
-                    event TEXT NOT NULL,
-                    payload TEXT NOT NULL
-                );
                 CREATE INDEX IF NOT EXISTS idx_jobs_updated ON jobs(updated_at DESC);
-                CREATE INDEX IF NOT EXISTS idx_events_job ON job_events(job_id, id);
                 """
             )
             try:
@@ -388,7 +386,6 @@ class JobStore:
                     "retry_count=0 WHERE job_id = ?",
                     (now, options_json, job_id)
                 )
-                self.record_event(job_id, "queued", {"message": "Queued (Re-run)"}, conn=conn)
                 # fetch and return updated row
                 row = conn.execute("SELECT * FROM jobs WHERE job_id = ?", (job_id,)).fetchone()
                 return dict(row) if row else None
@@ -422,7 +419,6 @@ class JobStore:
                 )
             except sqlite3.IntegrityError:
                 return None
-            self.record_event(job_id, "queued", {"message": "Queued"}, conn=conn)
         return row
 
     def update(self, job_id: str, **changes) -> dict | None:
@@ -446,16 +442,6 @@ class JobStore:
                 (*changes.values(), job_id, *statuses),
             )
         return self.get(job_id) if cur.rowcount == 1 else None
-
-    def record_event(self, job_id: str, event: str, payload: dict, conn: sqlite3.Connection | None = None) -> None:
-        owns = conn is None
-        conn = conn or self._connect()
-        conn.execute(
-            "INSERT INTO job_events(job_id,timestamp,event,payload) VALUES (?,?,?,?)",
-            (job_id, _now(), event, json.dumps(payload, ensure_ascii=False)),
-        )
-        if owns:
-            conn.commit()
 
     def get(self, job_id: str) -> dict | None:
         with self._connect() as conn:
@@ -784,7 +770,6 @@ class WorkerController:
 
     def _emit(self, job_id: str, event: str, payload: dict) -> None:
         payload = {"job_id": job_id, "event": event, **payload}
-        self.store.record_event(job_id, event, payload)
         self.on_event(event, payload)
 
     def _run_loop(self) -> None:
@@ -885,8 +870,6 @@ class WorkerController:
         exact_spk = options.get("num_speakers") if "num_speakers" in options else self.settings.num_speakers
         hotwords = options.get("hotwords") if "hotwords" in options else self.settings.hotwords
 
-        fmt_val = "md"
-
         started = self.store.update_if_status(
             job_id, {"queued"}, status="running", stage="starting",
             message="Starting worker", started_at=_now(),
@@ -919,7 +902,6 @@ class WorkerController:
                 "hotwords": hotwords or "",
                 "transcribe_only": transcribe_only,
                 "diarize_only": diarize_only,
-                "output_format": fmt_val,
                 "token": self.token_store.get()
             }
 
@@ -1051,7 +1033,6 @@ class WorkerController:
                 if self._active and self._active.get("job_id") == job_id:
                     self._active.pop("preview", None)
             return
-        self.store.record_event(job_id, kind, event)
         self.on_event(kind, event)
 
     def _should_forward_progress(self, job_id: str, event: dict) -> bool:
@@ -1082,6 +1063,12 @@ class BackgroundService:
     def __init__(self, settings: AppSettings | None = None,
                  on_event: Callable[[str, dict], None] | None = None):
         self.settings = settings or AppSettings.load()
+        try:
+            normalize = getattr(config, "normalize_whisper_model", None)
+            if callable(normalize):
+                self.settings.model = normalize(self.settings.model)
+        except Exception:
+            pass
         self.settings.save()
         LOG_DIR.mkdir(parents=True, exist_ok=True)
         self.store = JobStore(JOBS_DB)
@@ -1138,7 +1125,7 @@ class BackgroundService:
 
     def get_cache_size(self) -> str:
         """Return human-readable cache size."""
-        return get_cache_size(config.CACHE_DIR)
+        return format_size(get_cache_size_bytes(config.CACHE_DIR))
 
     def clear_audio_cache(self) -> dict:
         """Delete temporary .wav files from completed/failed tasks."""
@@ -1156,7 +1143,7 @@ class BackgroundService:
         self.on_event(event, payload)
 
     def _write_log(self, event: str, payload: dict) -> None:
-        """Persist a concise readable line in addition to SQLite event data."""
+        """Persist a concise readable activity log."""
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         message = str(payload.get("message") or event.replace("_", " "))
         token = self.token_store.get()

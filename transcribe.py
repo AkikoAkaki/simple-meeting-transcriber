@@ -121,13 +121,43 @@ def _write_stage_cache(path: Path, kind: str, cache_key: str, result: list[dict]
     partial.replace(path)
 
 
+_INITIAL_PROMPTS = {
+    "zh": "以下是普通话的会议记录，包含完整的标点符号。",
+    "en": "Here is a transcript of the meeting with complete punctuation.",
+    "ja": "これは会議の書き起こしです。句読点を含めます。",
+    "ko": "다음은 회의 녹취록이며 완전한 구두점이 포함되어 있습니다.",
+}
+
+
+def select_initial_prompt(language: str | None) -> str | None:
+    """Return the Whisper initial_prompt for a language, or None for auto/other.
+
+    Single selection point: None/auto -> None (no bias), zh/en/ja/ko ->
+    the matching prompt, any other explicit language -> None (never inject
+    a wrong-language prompt).
+    """
+    if language is None:
+        return None
+    normalized = str(language).strip().lower()
+    if normalized in ("", "auto"):
+        return None
+    return _INITIAL_PROMPTS.get(normalized)
+
+
 def _whisper_cache_key(model_name: str, device: str, language: str | None,
-                       hotwords: str | None, word_timestamps: bool) -> str:
+                       hotwords: str | None, word_timestamps: bool,
+                       initial_prompt: str | None = None) -> str:
     compute_type = "float16" if device == "cuda" else "int8"
+    if initial_prompt is None:
+        try:
+            initial_prompt = select_initial_prompt(language)
+        except Exception:
+            initial_prompt = None
     return _cache_key(
         "whisper", model=model_name, device=device, compute_type=compute_type,
         language=language or "auto", hotwords=hotwords or "",
         word_timestamps=bool(word_timestamps),
+        initial_prompt=initial_prompt or "",
     )
 
 
@@ -285,6 +315,22 @@ def clear_whisper_model() -> None:
         gc.collect()
 
 
+def _release_whisper_before_diarization() -> None:
+    """Free Whisper (and its CUDA blocks) before loading pyannote.
+
+    Owned by the pipeline orchestration layer so full pipelines never hold
+    previous-task pyannote + current Whisper at the same time, while
+    transcribe-only jobs can keep Whisper for reuse.
+    """
+    clear_whisper_model()
+    try:
+        import torch
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+    except ImportError:
+        pass
+
+
 _diarize_pipeline = None
 _diarize_token = None
 _diarize_device = None
@@ -363,7 +409,7 @@ def derive_paths(input_path: Path) -> dict[str, Path]:
         "whisper_json": config.CACHE_DIR      / f"_{stem}_{path_hash}_whisper.json",
         "diarize_json": config.CACHE_DIR      / f"_{stem}_{path_hash}_diarize.json",
         "segments_json": config.CACHE_DIR    / f"_{stem}_{path_hash}_segments.json",
-        "output_md":    transcript_path(input_path, config.TRANSCRIPT_DIR, "md"),
+        "output_md":    transcript_path(input_path, config.TRANSCRIPT_DIR),
     }
 
 
@@ -388,7 +434,7 @@ def get_hf_token() -> str:
             return stored
     except Exception:
         pass
-    print("[INFO] No HuggingFace token found — skipping speaker diarization.", flush=True)
+    print("[INFO] No HuggingFace token found.", flush=True)
     print("       To enable: save a token in the tray dashboard (or set HF_TOKEN env var)", flush=True)
     print("       Accept model terms at: https://hf.co/pyannote/speaker-diarization-3.1", flush=True)
     return ""
@@ -465,7 +511,12 @@ def run_whisper(wav_path: Path, whisper_json: Path, language: str | None,
 
     device = _resolve_device()
     compute_type = "float16" if device == "cuda" else "int8"
-    lang_display = language or "auto-detect"
+    if language is None or str(language).strip().lower() in ("", "auto"):
+        transcribe_language = None
+        lang_display = "auto-detect"
+    else:
+        transcribe_language = language
+        lang_display = language
     MODEL_SIZES = {"large-v3-turbo": "~1.6 GB", "large-v3": "~3.1 GB"}
     size_hint = MODEL_SIZES.get(config.WHISPER_MODEL, "")
     print(f"[2/4] Loading Whisper {config.WHISPER_MODEL} on {device} ({compute_type})...", flush=True)
@@ -486,24 +537,15 @@ def run_whisper(wav_path: Path, whisper_json: Path, language: str | None,
     print(f"      Model loaded. Transcribing [{lang_display}]...", flush=True)
     _emit_event("stage", stage="transcribing", progress=0.0,
                 message=f"Transcribing [{lang_display}]")
-    if language == "en":
-        initial_prompt = "Here is a transcript of the meeting with complete punctuation."
-    elif language == "ja":
-        initial_prompt = "これは会議の書き起こしです。句読点を含めます。"
-    elif language == "ko":
-        initial_prompt = "다음은 회의 녹취록이며 완전한 구두점이 포함되어 있습니다."
-    elif language == "zh" or language is None:
-        initial_prompt = "以下是普通话的会议记录，包含完整的标点符号。"
-    else:
-        initial_prompt = "Here is a transcript of the meeting with complete punctuation."
+    initial_prompt = select_initial_prompt(language)
 
     seg_iter = None
     info = None
     segments = []
-    try:
+    if True:
         seg_iter, info = model.transcribe(
             str(wav_path),
-            language=language,
+            language=transcribe_language,
             word_timestamps=True,
             beam_size=5,
             vad_filter=True,
@@ -554,14 +596,8 @@ def run_whisper(wav_path: Path, whisper_json: Path, language: str | None,
         print(f"      Done — {len(segments)} segments | detected: {info.language} ({info.language_probability:.0%})", flush=True)
         _emit_event("stage", stage="transcribing", progress=1.0,
                     segments=len(segments), message="Whisper transcription completed")
-    finally:
-        clear_whisper_model()
-        try:
-            import torch
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-        except ImportError:
-            pass
+    # NOTE: model release is owned by the pipeline orchestration layer
+    # (_run_job_impl) so transcribe-only jobs can reuse Whisper.
     return segments
 
 
@@ -581,7 +617,7 @@ def run_diarization(wav_path: Path, diarize_json: Path, token: str | None = None
                     message="Loading cached diarization result")
         print("[3/4] Loading cached diarization result...", flush=True)
         turns = _read_stage_cache(diarize_json, "diarization", cache_key)
-        if turns is not None:
+        if turns:
             print(f"      {len(turns)} turns from cache", flush=True)
             return turns
         print("[INFO] Diarization cache does not match current settings — re-running...", flush=True)
@@ -589,10 +625,8 @@ def run_diarization(wav_path: Path, diarize_json: Path, token: str | None = None
     if token is None:
         token = get_hf_token()
     if not token:
-        _emit_event("warning", stage="diarizing",
-                    message="Speaker diarization disabled: no HuggingFace token")
-        print("[3/4] Skipping diarization (no HF token)", flush=True)
-        return []
+        raise TranscriptionError("Speaker diarization requires a HuggingFace token. "
+                                 "Save one in the dashboard, or explicitly choose Transcribe only.")
 
     _emit_event("stage", stage="loading_diarization", progress=0.0,
                 message="Loading speaker diarization model")
@@ -617,9 +651,7 @@ def run_diarization(wav_path: Path, diarize_json: Path, token: str | None = None
             print("  3. Model terms accepted — https://hf.co/pyannote/segmentation-3.0", flush=True)
         else:
             print(f"ERROR: Failed to load diarization model: {e}", flush=True)
-        _emit_event("warning", stage="loading_diarization",
-                    message="Speaker diarization model could not be loaded", error=err)
-        return []
+        raise TranscriptionError(f"Speaker diarization model could not be loaded: {err}") from e
 
     if device == "cuda":
         print("      Diarization pipeline moved to GPU", flush=True)
@@ -645,8 +677,7 @@ def run_diarization(wav_path: Path, diarize_json: Path, token: str | None = None
             print("       Retry with --device cpu", flush=True)
         else:
             print(f"ERROR: Diarization failed: {e}", flush=True)
-        _emit_event("warning", stage="diarizing", message="Speaker diarization failed", error=str(e))
-        return []
+        raise TranscriptionError(f"Speaker diarization failed: {e}") from e
     finally:
         heartbeat_stop.set()
         heartbeat_thread.join(timeout=1)
@@ -656,6 +687,8 @@ def run_diarization(wav_path: Path, diarize_json: Path, token: str | None = None
         spk_str = str(spk)
         speaker_label = spk_str if spk_str.startswith("SPEAKER_") else f"SPEAKER_{spk_str}"
         turns.append({"start": round(t.start, 2), "end": round(t.end, 2), "speaker": speaker_label})
+    if not turns:
+        raise TranscriptionError("Speaker diarization returned no speaker turns")
     _write_stage_cache(diarize_json, "diarization", cache_key or "legacy", turns)
     print(f"      Done — {len(turns)} speaker turns identified", flush=True)
     _emit_event("stage", stage="diarizing", progress=1.0,
@@ -1118,7 +1151,6 @@ def run_server():
             print(f"ERROR: Server loop error: {e}", file=sys.stderr, flush=True)
 
 
-_SUPPORTED_MODELS = frozenset({"large-v3-turbo", "large-v3"})
 _SUPPORTED_DEVICES = frozenset({"auto", "cuda", "cpu"})
 
 
@@ -1145,13 +1177,15 @@ def run_job_from_json(data: dict):
     hotwords = data.get("hotwords", config.HOTWORDS) or ""
     token = data.get("token", "")
 
-    if model_name not in _SUPPORTED_MODELS:
+    if model_name not in config.SUPPORTED_MODELS:
         raise ValueError(
             f"Unsupported model: {model_name} "
-            f"(expected one of: {', '.join(sorted(_SUPPORTED_MODELS))})"
+            f"(expected one of: {', '.join(config.SUPPORTED_MODELS)})"
         )
     if device not in _SUPPORTED_DEVICES:
         raise ValueError(f"Unsupported device: {device} (expected one of: auto, cuda, cpu)")
+    if transcribe_only and diarize_only:
+        raise ValueError("Transcribe only and Re-diarize only are mutually exclusive")
     if not input_path.is_file():
         raise FileNotFoundError(f"Input file not found: {input_path}")
 
@@ -1169,7 +1203,7 @@ def run_job_from_json(data: dict):
     config.TRANSCRIPT_DIR = output_dir
     try:
         _run_job_impl(
-            input_path, output_dir, model_name, device,
+            input_path, model_name,
             max_speakers, num_speakers, language,
             transcribe_only, diarize_only, hotwords, token,
         )
@@ -1178,7 +1212,7 @@ def run_job_from_json(data: dict):
          config.NUM_SPEAKERS, config.HOTWORDS, config.TRANSCRIPT_DIR) = _saved_settings
 
 
-def _run_job_impl(input_path, output_dir, model_name, device,
+def _run_job_impl(input_path, model_name,
                   max_speakers, num_speakers, language,
                   transcribe_only, diarize_only, hotwords, token):
     if not token:
@@ -1187,29 +1221,48 @@ def _run_job_impl(input_path, output_dir, model_name, device,
     paths = derive_paths(input_path)
     convert_to_wav(input_path, paths["wav"])
     resolved_device = _resolve_device()
+    initial_prompt = select_initial_prompt(language)
     whisper_key = _whisper_cache_key(
-        model_name, resolved_device, language, hotwords, word_timestamps=True)
+        model_name, resolved_device, language, hotwords, word_timestamps=True,
+        initial_prompt=initial_prompt)
 
     if diarize_only:
+        # Diarize-only never loads Whisper, only reuses its cache.
         whisper_segments = _read_stage_cache(paths["whisper_json"], "whisper", whisper_key)
         if whisper_segments is None:
             raise FileNotFoundError(f"No cached Whisper result for {input_path.name}")
     else:
-        whisper_segments = run_whisper(
-            paths["wav"], paths["whisper_json"], language, hotwords, whisper_key)
+        # Free the previous task's diarization pipeline before loading Whisper
+        # so both models are never held on GPU at the same time.
+        clear_diarize_pipeline()
+        try:
+            whisper_segments = run_whisper(
+                paths["wav"], paths["whisper_json"], language, hotwords, whisper_key)
+        except Exception:
+            _release_whisper_before_diarization()
+            raise
 
     if not whisper_segments:
+        if not diarize_only and not transcribe_only:
+            _release_whisper_before_diarization()
         raise ValueError("No speech detected in audio")
 
     if transcribe_only:
+        # Keep Whisper loaded for compatible follow-up tasks.
         speaker_turns = []
     else:
-        if num_speakers is None:
-            speaker_turns = run_diarization(
-                paths["wav"], paths["diarize_json"], token, max_speakers=max_speakers)
-        else:
-            speaker_turns = run_diarization(
-                paths["wav"], paths["diarize_json"], token, num_speakers, max_speakers)
+        # Full and diarize-only need pyannote: ensure Whisper is off GPU first.
+        _release_whisper_before_diarization()
+        try:
+            if num_speakers is None:
+                speaker_turns = run_diarization(
+                    paths["wav"], paths["diarize_json"], token, max_speakers=max_speakers)
+            else:
+                speaker_turns = run_diarization(
+                    paths["wav"], paths["diarize_json"], token, num_speakers, max_speakers)
+        except Exception:
+            clear_diarize_pipeline()
+            raise
 
     segments = merge_results(whisper_segments, speaker_turns)
 
@@ -1257,17 +1310,19 @@ def main():
         sys.exit(1)
 
 
-def _main():
+def _build_cli_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Transcribe a video or audio file with speaker labels")
     parser.add_argument("input", nargs="?", help="Path to video/audio file")
     parser.add_argument("--server", action="store_true", help="Run in persistent server mode")
     parser.add_argument("--language", default=None,
                         help="Language code (en/zh/ja/...). Default: auto-detect")
-    parser.add_argument("--transcribe-only", action="store_true",
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--transcribe-only", action="store_true",
                         help="Run Whisper only, skip diarization (no HF token needed)")
-    parser.add_argument("--diarize-only", action="store_true",
+    mode.add_argument("--diarize-only", action="store_true",
                         help="Re-run diarization using cached Whisper result")
     parser.add_argument("--model", default=None,
+                        choices=list(config.SUPPORTED_MODELS),
                         help="Whisper model size (large-v3-turbo/large-v3). Overrides config.py")
     parser.add_argument("--device", default=None,
                         help="Compute device (auto/cuda/cpu). Overrides config.py")
@@ -1279,6 +1334,11 @@ def _main():
                         help="Comma-separated names or technical terms to bias Whisper")
     parser.add_argument("--output-dir", default=None,
                         help="Directory for output .md file. Overrides config.py TRANSCRIPT_DIR")
+    return parser
+
+
+def _main():
+    parser = _build_cli_parser()
     args = parser.parse_args()
 
     if args.server:
@@ -1291,110 +1351,19 @@ def _main():
     _emit_event("started", stage="worker", job_id=os.environ.get("TRANSCRIBE_JOB_ID", ""),
                 source=str(Path(args.input).resolve()), message="Transcription worker started")
 
-    if args.model:
-        config.WHISPER_MODEL = args.model
-    if args.device:
-        config.DEVICE = args.device
-    if args.max_speakers is not None:
-        config.MAX_SPEAKERS = args.max_speakers
-    if args.num_speakers is not None:
-        config.NUM_SPEAKERS = args.num_speakers
-    if args.hotwords is not None:
-        config.HOTWORDS = args.hotwords
-    if args.output_dir:
-        config.TRANSCRIPT_DIR = Path(args.output_dir)
-
-    import platform
-    print(f"Python {sys.version.split()[0]} | {platform.system()} {platform.release()}", flush=True)
-    try:
-        import ctranslate2
-        cuda_count = ctranslate2.get_cuda_device_count()
-        if cuda_count > 0:
-            cuda_info = f"CUDA (device count: {cuda_count})"
-        else:
-            cuda_info = "CPU only (no CUDA)"
-        print(f"ctranslate2 | {cuda_info}", flush=True)
-    except Exception:
-        pass
-
-    language = args.language or config.LANGUAGE
-    hotwords = config.HOTWORDS or ""
-    input_path = Path(args.input).resolve()
-
-    if not input_path.exists():
-        print(f"ERROR: file not found: {input_path}", flush=True)
-        sys.exit(1)
-
-    paths = derive_paths(input_path)
-
-    convert_to_wav(input_path, paths["wav"])
-    resolved_device = _resolve_device()
-    whisper_key = _whisper_cache_key(
-        config.WHISPER_MODEL, resolved_device, language, hotwords, word_timestamps=True)
-
-    if args.diarize_only:
-        whisper_segments = _read_stage_cache(paths["whisper_json"], "whisper", whisper_key)
-        if whisper_segments is None:
-            print(f"ERROR: no cached Whisper result for {input_path.name}", flush=True)
-            print("       Run without --diarize-only first.", flush=True)
-            sys.exit(1)
-    else:
-        whisper_segments = run_whisper(
-            paths["wav"], paths["whisper_json"], language, hotwords, whisper_key)
-
-    if not whisper_segments:
-        _emit_event("failed", stage="transcribing", message="No speech detected in audio")
-        print("ERROR: No speech detected in audio.", flush=True)
-        print("  Possible causes:", flush=True)
-        print("  1. Audio is silent or contains only music/noise (no speech)", flush=True)
-        print("  2. WAV cache may be corrupted from a previous failed run.", flush=True)
-        print(f"     Delete it and retry: {paths['wav']}", flush=True)
-        print("  3. Wrong --language setting (try without it for auto-detect)", flush=True)
-        print("  4. Source file is corrupted or has no audio track", flush=True)
-        sys.exit(1)
-
-    if args.transcribe_only:
-        speaker_turns = []
-    else:
-        if config.NUM_SPEAKERS is None:
-            speaker_turns = run_diarization(
-                paths["wav"], paths["diarize_json"], max_speakers=config.MAX_SPEAKERS)
-        else:
-            speaker_turns = run_diarization(
-                paths["wav"], paths["diarize_json"], None, config.NUM_SPEAKERS,
-                config.MAX_SPEAKERS)
-
-    segments = merge_results(whisper_segments, speaker_turns)
-
-    total_sec = get_wav_duration(paths["wav"])
-    if total_sec <= 0 and segments:
-        total_sec = segments[-1]["end"]
-
-    segments_path = paths.get("segments_json")
-    merged_key = _merged_cache_key(
-        whisper_key, config.MAX_SPEAKERS, config.NUM_SPEAKERS, bool(speaker_turns))
-    if segments_path:
-        metadata = {
-            "source_file": input_path.name,
-            "total_sec": total_sec,
-            "language": language,
-            "has_diarization": bool(speaker_turns),
-        }
-        _write_stage_cache(
-            segments_path, "merged", merged_key, segments, metadata=metadata)
-
-    _emit_event("stage", stage="writing", progress=0.0,
-                message="Writing md output")
-    content = generate_markdown(segments, input_path.name, total_sec,
-                                bool(speaker_turns), language)
-    out_path = paths["output_md"]
-
-    out_path.write_text(content, encoding="utf-8")
-    _emit_event("completed", stage="completed", progress=1.0,
-                output_path=str(out_path), diarization=bool(speaker_turns),
-                message="Transcription completed")
-    print(f"\n✓ Done → {out_path}", flush=True)
-    print(f"  Cache files in {config.CACHE_DIR} can be deleted to free disk space.", flush=True)
+    run_job_from_json({
+        "input_path": args.input,
+        "output_dir": args.output_dir or str(config.TRANSCRIPT_DIR),
+        "model": args.model or config.WHISPER_MODEL,
+        "device": args.device or config.DEVICE,
+        "language": args.language if args.language is not None else config.LANGUAGE,
+        "max_speakers": args.max_speakers if args.max_speakers is not None else config.MAX_SPEAKERS,
+        "num_speakers": args.num_speakers if args.num_speakers is not None else config.NUM_SPEAKERS,
+        "hotwords": args.hotwords if args.hotwords is not None else config.HOTWORDS,
+        "transcribe_only": args.transcribe_only,
+        "diarize_only": args.diarize_only,
+        "token": "" if args.transcribe_only else get_hf_token(),
+    })
 
 
 if __name__ == "__main__":
